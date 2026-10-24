@@ -147,7 +147,8 @@ Item {
 
       ctx.lineWidth = 1
 
-      if (chart.count < 2) {
+      var minPoints = mode === "radar" ? 3 : 2
+      if (chart.count < minPoints) {
         ctx.font = "bold 10px '" + family + "'"
         ctx.textAlign = "center"
         ctx.textBaseline = "middle"

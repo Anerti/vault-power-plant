@@ -3,7 +3,6 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Services.UPower
 import qs.Commons
-import qs.Commons as Commons
 import qs.Ui
 import "Model.js" as Model
 
@@ -14,14 +13,17 @@ Panel {
 
   manageIpc: false
   property var batteryInfo: ({})
-  property var systemInfo: ({})
   property var profiles: []
   property string activeProfile: ""
   property int profileIndex: 0
   property bool cursorActive: false
 
   property var batteryHistory: []
-  readonly property int batteryHistoryMax: 288
+  readonly property int batteryHistoryMax: 1440
+  readonly property string telemetryDataDir: Quickshell.env("HOME") + "/.config/omarchy/vault-power-plant"
+  readonly property string telemetryHistoryPath: telemetryDataDir + "/history.json"
+  property bool telemetryReady: false
+  property bool telemetryBackupAttempted: false
   readonly property bool showPercentage: setting("showPercentage", false) === true
 
   readonly property real openPanelIndicatorWidth: showPercentage && !button.vertical ? button.glyphPaintedWidth : 0
@@ -88,7 +90,6 @@ Panel {
   }
 
   readonly property color accentColor: Color.accent
-  readonly property color batteryFillColor: root.accentColor
 
   readonly property var chargingPhrases: [
     "Pumping power",
@@ -132,15 +133,13 @@ Panel {
 
     if (!batteryProc.running) batteryProc.running = true
     if (!profilesProc.running) profilesProc.running = true
-    if (!systemProc.running) systemProc.running = true
   }
 
-  function updateKeyValue(raw, targetName) {
+  function updateBattery(raw) {
     var next = Model.parseKeyValue(raw)
 
     if (Object.keys(next).length === 0) return
-    if (targetName === "battery") batteryInfo = next
-    else systemInfo = next
+    batteryInfo = next
   }
 
   function updateProfiles(raw) {
@@ -165,6 +164,43 @@ Panel {
   function togglePercentage() {
     root.settings = Object.assign({}, root.settings, { showPercentage: !root.showPercentage })
     if (root.bar && root.bar.shell) root.bar.shell.updateEntryInline(root.moduleName, root.settings)
+  }
+
+  function onTelemetryLoaded() {
+    var list = telemetryAdapter.samples
+    var checks = Array.isArray(list) ? list : []
+    var clean = []
+    for (var i = 0; i < checks.length; i++) {
+      var s = checks[i]
+      if (s && typeof s.t === "number" && typeof s.v === "number" && s.v >= 0 && s.v <= 1)
+        clean.push({ t: s.t, v: s.v })
+    }
+    clean = clean.concat(root.batteryHistory)
+    clean.sort(function(a, b) { return a.t - b.t })
+    var cutoff = Date.now() - 24 * 60 * 60 * 1000
+    var kept = []
+    for (var j = 0; j < clean.length; j++) {
+      if (kept.length > 0 && clean[j].t === kept[kept.length - 1].t) continue
+      if (clean[j].t >= cutoff) kept.push(clean[j])
+    }
+    while (kept.length > root.batteryHistoryMax) kept.shift()
+    root.batteryHistory = kept
+    root.telemetryReady = true
+  }
+
+  function onTelemetryLoadFailed() {
+    console.warn("anerti.vault-power-plant: telemetry history load failed, starting empty")
+    if (!root.telemetryBackupAttempted) {
+      root.telemetryBackupAttempted = true
+      telemetryBackupProc.running = true
+    }
+    root.telemetryReady = true
+  }
+
+  function persistHistory() {
+    if (!root.telemetryReady) return
+    telemetryAdapter.samples = root.batteryHistory
+    telemetrySaveTimer.restart()
   }
 
   IpcHandler {
@@ -201,7 +237,7 @@ Panel {
   Process {
     id: batteryProc
     command: ["omarchy-battery-status", "--shell"]
-    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.updateKeyValue(text, "battery") }
+    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.updateBattery(text) }
   }
 
   Process {
@@ -211,26 +247,57 @@ Panel {
   }
 
   Process {
-    id: systemProc
-    command: ["omarchy-system-stats"]
-    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.updateKeyValue(text, "system") }
-  }
-
-  Process {
     id: actionProc
     onExited: root.refresh()
   }
 
+  FileView {
+    id: telemetryFile
+    path: root.telemetryHistoryPath
+    printErrors: true
+    atomicWrites: true
+    onLoaded: root.onTelemetryLoaded()
+    onLoadFailed: root.onTelemetryLoadFailed()
+
+    JsonAdapter {
+      id: telemetryAdapter
+      property var samples: []
+    }
+  }
+
+  Process {
+    id: telemetryEnsureDirProc
+    command: ["bash", "-c",
+      "mkdir -p \"$HOME/.config/omarchy/vault-power-plant\"; f=\"$HOME/.config/omarchy/vault-power-plant/history.json\"; [[ -f \"$f\" ]] || printf '{\"samples\":[]}\\n' > \"$f\""]
+    onExited: telemetryFile.reload()
+  }
+
+  Process {
+    id: telemetryBackupProc
+    command: ["bash", "-c",
+      "f=\"$HOME/.config/omarchy/vault-power-plant/history.json\"; if [[ -s \"$f\" ]] && ! python3 -c 'import json,sys; json.load(open(sys.argv[1]))' \"$f\" 2>/dev/null; then mv -f \"$f\" \"$f.corrupt-$(date +%s)\"; fi"]
+  }
+
+  Timer {
+    id: telemetrySaveTimer
+    interval: 1500
+    repeat: false
+    onTriggered: telemetryFile.writeAdapter()
+  }
+
+  Component.onCompleted: telemetryEnsureDirProc.running = true
+
   Timer { interval: 5000; running: root.opened; repeat: true; onTriggered: root.refresh() }
 
   Timer {
-    interval: 300000
+    interval: 60000
     running: true
     repeat: true
     triggeredOnStart: true
     onTriggered: {
-      if (!root.batteryPresent) return
+      if (!root.batteryPresent || !root.telemetryReady) return
       root.batteryHistory = Model.historyPush(root.batteryHistory, root.batteryFraction, root.batteryHistoryMax)
+      root.persistHistory()
     }
   }
 
@@ -406,7 +473,7 @@ Panel {
             anchors.verticalCenter: barTrack.verticalCenter
             height: barTrack.height
             radius: barTrack.radius
-            color: root.batteryFillColor
+            color: root.accentColor
             width: Math.max(barTrack.height, barTrack.width * root.batteryFraction)
 
             Behavior on width { NumberAnimation { duration: 320; easing.type: Easing.OutCubic } }

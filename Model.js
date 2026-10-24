@@ -46,7 +46,7 @@ function profileIcon(name) {
 }
 
 function batteryFraction(device) {
-  return device && device.isPresent ? Math.max(0, Math.min(1, device.percentage)) : 0
+  return device && device.isPresent ? clamp01(device.percentage) : 0
 }
 
 function clamp01(v) {
@@ -58,11 +58,6 @@ function historyPush(history, fraction, maxSamples) {
   next.push({ t: Date.now(), v: clamp01(fraction) })
   while (next.length > maxSamples) next.shift()
   return next
-}
-
-function historyTail(history, count) {
-  var h = Array.isArray(history) ? history : []
-  return h.length <= count ? h : h.slice(h.length - count)
 }
 
 function historyBuckets(history, count) {
@@ -138,7 +133,6 @@ if (typeof module !== "undefined") {
     modeLabel: modeLabel,
     clamp01: clamp01,
     historyPush: historyPush,
-    historyTail: historyTail,
     historyBuckets: historyBuckets
   }
 }
