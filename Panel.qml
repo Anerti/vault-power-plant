@@ -92,7 +92,7 @@ Panel {
     return root.bar ? root.bar.foreground : Commons.Color.foreground
   }
 
-  // Cute agent-flavored phrases shown in the hero status line, rotated on a
+  // Cute agent-flavored phrases shown in the GIF dialogue bubble, rotated on a
   // timer so the panel feels alive when current is flowing (either direction).
   readonly property var chargingPhrases: [
     "Pumping power",
@@ -127,10 +127,9 @@ Panel {
   }
   readonly property bool rotatingPhrases: activePhrases.length > 0
 
-  readonly property string heroStatusText: {
-    if (fullyCharged) return "Fully charged"
-    if (rotatingPhrases) return activePhrases[phraseIndex % activePhrases.length]
-    return modeLabel()
+  readonly property string bubblePhrase: {
+    if (!rotatingPhrases) return ""
+    return activePhrases[phraseIndex % activePhrases.length]
   }
 
   function refresh() {
@@ -231,7 +230,7 @@ Panel {
 
   Timer { interval: 5000; running: root.opened; repeat: true; onTriggered: root.refresh() }
 
-  // Rotate the status phrase while the panel is open and we're in a
+  // Rotate the dialogue phrase while the panel is open and we're in a
   // rotating state (charging or on battery). The text swap is wrapped in a
   // fade so the changeover reads as one organism rather than a hard cut.
   Timer {
@@ -246,7 +245,7 @@ Panel {
   SequentialAnimation {
     id: phraseSwap
     PropertyAnimation {
-      target: heroStatus; property: "opacity"
+      target: panelArt; property: "phraseOpacity"
       to: 0.0; duration: 180; easing.type: Easing.OutQuad
     }
     ScriptAction {
@@ -256,20 +255,19 @@ Panel {
       }
     }
     PropertyAnimation {
-      target: heroStatus; property: "opacity"
+      target: panelArt; property: "phraseOpacity"
       to: 1.0; duration: 260; easing.type: Easing.InQuad
     }
   }
 
-  // If we leave a rotating state mid-swap, halt the animation and snap back
-  // to full opacity so "FULLY CHARGED" is legible immediately rather than
-  // appearing dimmed.
+  // If we leave a rotating state mid-swap, halt the animation and snap the
+  // bubble back to full opacity for the next time phrases resume.
   Connections {
     target: root
     function onRotatingPhrasesChanged() {
       if (!root.rotatingPhrases) {
         phraseSwap.stop()
-        heroStatus.opacity = 1.0
+        panelArt.phraseOpacity = 1.0
       }
     }
   }
@@ -359,7 +357,7 @@ Panel {
             Text {
               id: heroStatus
               textFormat: Text.PlainText
-              text: root.heroStatusText.toUpperCase()
+              text: root.modeLabel().toUpperCase()
               color: Qt.darker(root.bar.foreground, 1.4)
               font.family: root.bar.fontFamily
               font.pixelSize: Style.font.caption
@@ -386,9 +384,11 @@ Panel {
         }
 
         PanelArt {
+          id: panelArt
           width: parent.width
           source: Qt.resolvedUrl("assets/vault-boy-holding-glowing-lightbulb.gif")
           playing: root.opened
+          phrase: root.bubblePhrase
         }
 
         // ---------- Battery progress bar ----------

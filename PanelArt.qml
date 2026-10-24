@@ -11,6 +11,9 @@ Item {
 
   property alias source: gif.source
   property bool playing: true
+  // Rotating status line shown as Vault Boy dialogue (empty hides the bubble).
+  property string phrase: ""
+  property alias phraseOpacity: bubble.opacity
 
   // Union of the GIF's frame bounds plus a small margin. The source is mostly
   // transparent padding, so cropping to the figure is what makes it read as a
@@ -99,6 +102,109 @@ Item {
       }
 
       transform: Scale { id: crtScale; origin.x: artScreen.width / 2; origin.y: artScreen.height / 2 }
+    }
+
+    // Comic dialogue bubble — top-right of the poster, tail toward Vault Boy.
+    Item {
+      id: bubble
+      visible: root.phrase !== ""
+      z: 2
+      anchors.right: parent.right
+      anchors.top: parent.top
+      anchors.rightMargin: Style.space(10)
+      anchors.topMargin: Style.space(10)
+      // Measure the caption font so the box scales with the theme instead of
+      // with the phrase. Two lines of headroom keeps the shape fixed while
+      // still fitting the longest rotating message when it wraps.
+      FontMetrics {
+        id: bubbleMetrics
+        font.family: Style.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: true
+        font.letterSpacing: 1.0
+      }
+
+      readonly property real boxWidth: Math.round(artScreen.width * 0.52)
+      readonly property real boxHeight: Math.round(bubbleMetrics.height * 2 + Style.space(14))
+      readonly property real tailHeight: Style.space(10)
+      // Vault Boy's head lands about a third of the way across the box, since
+      // the bubble is right-aligned over his centered figure.
+      readonly property real tailCenter: boxWidth * 0.33
+
+      width: boxWidth
+      height: boxHeight + tailHeight
+
+      // Body and tail share one path so the outline runs unbroken around the
+      // tail instead of ending in a seam across the bubble's bottom edge.
+      Canvas {
+        id: bubbleSurface
+        anchors.fill: parent
+        readonly property color fill: Color.background
+        readonly property color stroke: Color.foreground
+        onFillChanged: requestPaint()
+        onStrokeChanged: requestPaint()
+        onWidthChanged: requestPaint()
+        onHeightChanged: requestPaint()
+        onPaint: {
+          var ctx = getContext("2d")
+          ctx.reset()
+
+          var w = bubble.boxWidth
+          var h = bubble.boxHeight
+          var th = bubble.tailHeight
+          var tw = Style.space(18)
+          var r = Math.max(1, Style.space(12) - 1)
+          var cx = bubble.tailCenter
+          var left = cx - tw / 2
+          var right = cx + tw / 2
+          // Lean the point toward the mascot below-left of the bubble.
+          var tipX = cx - tw * 0.35
+
+          ctx.beginPath()
+          ctx.moveTo(1 + r, 1)
+          ctx.lineTo(w - 1 - r, 1)
+          ctx.arc(w - 1 - r, 1 + r, r, -Math.PI / 2, 0)
+          ctx.lineTo(w - 1, h - 1 - r)
+          ctx.arc(w - 1 - r, h - 1 - r, r, 0, Math.PI / 2)
+
+          // Slanted, softly curved tail, continuous with the bottom edge.
+          ctx.lineTo(right, h - 1)
+          ctx.quadraticCurveTo(right - tw * 0.12, h - 1 + th * 0.55, tipX, h - 1 + th)
+          ctx.quadraticCurveTo(left + tw * 0.15, h - 1 + th * 0.4, left, h - 1)
+
+          ctx.lineTo(1 + r, h - 1)
+          ctx.arc(1 + r, h - 1 - r, r, Math.PI / 2, Math.PI)
+          ctx.lineTo(1, 1 + r)
+          ctx.arc(1 + r, 1 + r, r, Math.PI, Math.PI * 1.5)
+          ctx.closePath()
+
+          ctx.fillStyle = Qt.rgba(fill.r, fill.g, fill.b, fill.a)
+          ctx.fill()
+          ctx.strokeStyle = Qt.rgba(stroke.r, stroke.g, stroke.b, stroke.a)
+          ctx.lineWidth = 2
+          ctx.stroke()
+        }
+      }
+
+      Text {
+        id: bubbleText
+        anchors.top: parent.top
+        anchors.horizontalCenter: parent.horizontalCenter
+        width: parent.width - Style.space(16)
+        height: bubble.boxHeight
+        textFormat: Text.PlainText
+        text: root.phrase.toUpperCase()
+        color: Color.foreground
+        font.family: Style.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: true
+        font.letterSpacing: 1.0
+        wrapMode: Text.WordWrap
+        horizontalAlignment: Text.AlignHCenter
+        verticalAlignment: Text.AlignVCenter
+        maximumLineCount: 2
+        elide: Text.ElideRight
+      }
     }
   }
 
