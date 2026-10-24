@@ -49,6 +49,42 @@ function batteryFraction(device) {
   return device && device.isPresent ? Math.max(0, Math.min(1, device.percentage)) : 0
 }
 
+function clamp01(v) {
+  return Math.max(0, Math.min(1, v))
+}
+
+function historyPush(history, fraction, maxSamples) {
+  var next = Array.isArray(history) ? history.slice() : []
+  next.push({ t: Date.now(), v: clamp01(fraction) })
+  while (next.length > maxSamples) next.shift()
+  return next
+}
+
+function historyTail(history, count) {
+  var h = Array.isArray(history) ? history : []
+  return h.length <= count ? h : h.slice(h.length - count)
+}
+
+function historyBuckets(history, count) {
+  var h = Array.isArray(history) ? history : []
+  if (h.length === 0) return []
+  if (h.length <= count) {
+    var raw = []
+    for (var r = 0; r < h.length; r++) raw.push({ t: h[r].t, v: clamp01(h[r].v) })
+    return raw
+  }
+  var out = []
+  var size = h.length / count
+  for (var i = 0; i < count; i++) {
+    var a = Math.floor(i * size)
+    var b = Math.max(a + 1, Math.floor((i + 1) * size))
+    var sum = 0
+    for (var j = a; j < b; j++) sum += h[j].v
+    out.push({ t: h[b - 1].t, v: clamp01(sum / (b - a)) })
+  }
+  return out
+}
+
 function chargeThresholdActive(device, onBattery, states) {
   var d = device || {}
   var s = states || {}
@@ -99,6 +135,10 @@ if (typeof module !== "undefined") {
     batteryFraction: batteryFraction,
     chargeThresholdActive: chargeThresholdActive,
     batteryIcon: batteryIcon,
-    modeLabel: modeLabel
+    modeLabel: modeLabel,
+    clamp01: clamp01,
+    historyPush: historyPush,
+    historyTail: historyTail,
+    historyBuckets: historyBuckets
   }
 }

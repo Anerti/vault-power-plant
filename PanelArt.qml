@@ -2,28 +2,20 @@ import QtQuick
 import QtQuick.Effects
 import qs.Commons
 
-// The popup's art as a large poster, like the section art above the Vault
-// menu: a big 4:3 picture on the menu's accent sunburst, cropped tight to the
-// figure, tinted in the theme's foreground, and switched on with the menu's
-// CRT reveal (scale, glow, and scanlines).
 Item {
   id: root
 
   property alias source: gif.source
   property bool playing: true
-  // Rotating status line shown as Vault Boy dialogue (empty hides the bubble).
+
   property string phrase: ""
   property alias phraseOpacity: bubble.opacity
 
-  // Union of the GIF's frame bounds plus a small margin. The source is mostly
-  // transparent padding, so cropping to the figure is what makes it read as a
-  // poster instead of a small stamp in the middle of the popup.
   readonly property rect sourceCrop: Qt.rect(145, 43, 223, 300)
   readonly property real posterAspect: 4 / 3
 
   implicitHeight: width > 0 ? width / posterAspect : Style.space(280)
 
-  // The menu's poster: a faint accent wash under an accent sunburst.
   Rectangle {
     anchors.fill: parent
     radius: Style.cornerRadius
@@ -104,7 +96,6 @@ Item {
       transform: Scale { id: crtScale; origin.x: artScreen.width / 2; origin.y: artScreen.height / 2 }
     }
 
-    // Comic dialogue bubble — top-right of the poster, tail toward Vault Boy.
     Item {
       id: bubble
       visible: root.phrase !== ""
@@ -113,9 +104,7 @@ Item {
       anchors.top: parent.top
       anchors.rightMargin: Style.space(10)
       anchors.topMargin: Style.space(10)
-      // Measure the caption font so the box scales with the theme instead of
-      // with the phrase. Two lines of headroom keeps the shape fixed while
-      // still fitting the longest rotating message when it wraps.
+
       FontMetrics {
         id: bubbleMetrics
         font.family: Style.fontFamily
@@ -127,15 +116,12 @@ Item {
       readonly property real boxWidth: Math.round(artScreen.width * 0.52)
       readonly property real boxHeight: Math.round(bubbleMetrics.height * 2 + Style.space(14))
       readonly property real tailHeight: Style.space(10)
-      // Vault Boy's head lands about a third of the way across the box, since
-      // the bubble is right-aligned over his centered figure.
+
       readonly property real tailCenter: boxWidth * 0.33
 
       width: boxWidth
       height: boxHeight + tailHeight
 
-      // Body and tail share one path so the outline runs unbroken around the
-      // tail instead of ending in a seam across the bubble's bottom edge.
       Canvas {
         id: bubbleSurface
         anchors.fill: parent
@@ -157,7 +143,7 @@ Item {
           var cx = bubble.tailCenter
           var left = cx - tw / 2
           var right = cx + tw / 2
-          // Lean the point toward the mascot below-left of the bubble.
+
           var tipX = cx - tw * 0.35
 
           ctx.beginPath()
@@ -167,7 +153,6 @@ Item {
           ctx.lineTo(w - 1, h - 1 - r)
           ctx.arc(w - 1 - r, h - 1 - r, r, 0, Math.PI / 2)
 
-          // Slanted, softly curved tail, continuous with the bottom edge.
           ctx.lineTo(right, h - 1)
           ctx.quadraticCurveTo(right - tw * 0.12, h - 1 + th * 0.55, tipX, h - 1 + th)
           ctx.quadraticCurveTo(left + tw * 0.15, h - 1 + th * 0.4, left, h - 1)
