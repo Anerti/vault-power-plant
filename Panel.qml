@@ -8,7 +8,7 @@ import "Model.js" as Model
 
 Panel {
   id: root
-  moduleName: "omarchy.power"
+  moduleName: "anerti.vault-power-plant"
   ipcTarget: "omarchy.power"
 
   manageIpc: false
@@ -19,7 +19,7 @@ Panel {
   property bool cursorActive: false
 
   property var batteryHistory: []
-  readonly property int batteryHistoryMax: 1440
+  readonly property int batteryHistoryMax: 7 * 1440
   readonly property string telemetryDataDir: Quickshell.env("HOME") + "/.config/omarchy/vault-power-plant"
   readonly property string telemetryHistoryPath: telemetryDataDir + "/history.json"
   property bool telemetryReady: false
@@ -58,10 +58,6 @@ Panel {
   function modeLabel() {
     var device = UPower.displayDevice
     return Model.modeLabel(device, root.discharging, upowerStates())
-  }
-
-  function profileIcon(name) {
-    return Model.profileIcon(name)
   }
 
   readonly property bool fullyCharged: {
@@ -168,7 +164,8 @@ Panel {
 
   function onTelemetryLoaded() {
     var list = telemetryAdapter.samples
-    var checks = Array.isArray(list) ? list : []
+    // JsonAdapter hands back a Qt sequence, not a JS array, so Array.isArray() is false here.
+    var checks = list ? Array.from(list) : []
     var clean = []
     for (var i = 0; i < checks.length; i++) {
       var s = checks[i]
@@ -177,7 +174,7 @@ Panel {
     }
     clean = clean.concat(root.batteryHistory)
     clean.sort(function(a, b) { return a.t - b.t })
-    var cutoff = Date.now() - 24 * 60 * 60 * 1000
+    var cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000
     var kept = []
     for (var j = 0; j < clean.length; j++) {
       if (kept.length > 0 && clean[j].t === kept[kept.length - 1].t) continue
@@ -199,8 +196,8 @@ Panel {
 
   function persistHistory() {
     if (!root.telemetryReady) return
-    telemetryAdapter.samples = root.batteryHistory
-    telemetrySaveTimer.restart()
+    // start(), not restart(): the next sample lands before 10 min, so restart() would never fire.
+    if (!telemetrySaveTimer.running) telemetrySaveTimer.start()
   }
 
   IpcHandler {
@@ -268,21 +265,28 @@ Panel {
   Process {
     id: telemetryEnsureDirProc
     command: ["bash", "-c",
-      "mkdir -p \"$HOME/.config/omarchy/vault-power-plant\"; f=\"$HOME/.config/omarchy/vault-power-plant/history.json\"; [[ -f \"$f\" ]] || printf '{\"samples\":[]}\\n' > \"$f\""]
+      "mkdir -p \"$1\"; [[ -f \"$2\" ]] || printf '{\"samples\":[]}\\n' > \"$2\"",
+      "_", root.telemetryDataDir, root.telemetryHistoryPath]
     onExited: telemetryFile.reload()
   }
 
   Process {
     id: telemetryBackupProc
+    // Without python3 we cannot tell a corrupt file from a valid one, so leave it alone.
     command: ["bash", "-c",
-      "f=\"$HOME/.config/omarchy/vault-power-plant/history.json\"; if [[ -s \"$f\" ]] && ! python3 -c 'import json,sys; json.load(open(sys.argv[1]))' \"$f\" 2>/dev/null; then mv -f \"$f\" \"$f.corrupt-$(date +%s)\"; fi"]
+      "if [[ -s \"$1\" ]] && command -v python3 >/dev/null && ! python3 -c 'import json,sys; json.load(open(sys.argv[1]))' \"$1\" 2>/dev/null; then mv -f \"$1\" \"$1.corrupt-$(date +%s)\"; fi",
+      "_", root.telemetryHistoryPath]
   }
 
+  // Batch writes: the full 7-day history is ~10k samples, too much to rewrite every minute.
   Timer {
     id: telemetrySaveTimer
-    interval: 1500
+    interval: 10 * 60 * 1000
     repeat: false
-    onTriggered: telemetryFile.writeAdapter()
+    onTriggered: {
+      telemetryAdapter.samples = root.batteryHistory
+      telemetryFile.writeAdapter()
+    }
   }
 
   Component.onCompleted: telemetryEnsureDirProc.running = true
@@ -328,13 +332,10 @@ Panel {
     }
   }
 
-  Connections {
-    target: root
-    function onRotatingPhrasesChanged() {
-      if (!root.rotatingPhrases) {
-        phraseSwap.stop()
-        panelArt.phraseOpacity = 1.0
-      }
+  onRotatingPhrasesChanged: {
+    if (!rotatingPhrases) {
+      phraseSwap.stop()
+      panelArt.phraseOpacity = 1.0
     }
   }
 
@@ -564,7 +565,7 @@ Panel {
                 required property var modelData
                 required property int index
                 width: profileRow.cellWidth
-                iconText: root.profileIcon(String(modelData))
+                iconText: Model.profileIcon(String(modelData))
                 iconSize: Style.font.title
                 text: String(modelData).charAt(0).toUpperCase() + String(modelData).slice(1)
                 fontSize: Style.font.bodySmall

@@ -60,23 +60,27 @@ function historyPush(history, fraction, maxSamples) {
   return next
 }
 
-function historyBuckets(history, count) {
+function dayStart(now, offset) {
+  var d = new Date(now)
+  d.setHours(0, 0, 0, 0)
+  d.setDate(d.getDate() - offset)
+  return d.getTime()
+}
+
+// Average samples into `count` equal time slots of [start, end); empty slots are null.
+function dayBuckets(history, start, end, count) {
   var h = Array.isArray(history) ? history : []
-  if (h.length === 0) return []
-  if (h.length <= count) {
-    var raw = []
-    for (var r = 0; r < h.length; r++) raw.push({ t: h[r].t, v: clamp01(h[r].v) })
-    return raw
+  var sums = [], ns = []
+  for (var i = 0; i < count; i++) { sums.push(0); ns.push(0) }
+  var span = (end - start) / count
+  for (var j = 0; j < h.length; j++) {
+    if (h[j].t < start || h[j].t >= end) continue
+    var k = Math.min(count - 1, Math.floor((h[j].t - start) / span))
+    sums[k] += h[j].v
+    ns[k]++
   }
   var out = []
-  var size = h.length / count
-  for (var i = 0; i < count; i++) {
-    var a = Math.floor(i * size)
-    var b = Math.max(a + 1, Math.floor((i + 1) * size))
-    var sum = 0
-    for (var j = a; j < b; j++) sum += h[j].v
-    out.push({ t: h[b - 1].t, v: clamp01(sum / (b - a)) })
-  }
+  for (var b = 0; b < count; b++) out.push(ns[b] ? clamp01(sums[b] / ns[b]) : null)
   return out
 }
 
@@ -113,10 +117,9 @@ function modeLabel(device, onBattery, states) {
   var d = device || {}
   if (!d.isPresent) return ""
 
-  var percentage = d.isPresent ? d.percentage : 0
   if (chargeThresholdActive(d, onBattery, states)) return "Threshold"
   if (onBattery) return "On battery"
-  if (!onBattery && percentage >= 1) return "Fully charged"
+  if (d.state === states.FullyCharged || d.percentage >= 1) return "Fully charged"
   return "Charging"
 }
 
@@ -133,6 +136,7 @@ if (typeof module !== "undefined") {
     modeLabel: modeLabel,
     clamp01: clamp01,
     historyPush: historyPush,
-    historyBuckets: historyBuckets
+    dayStart: dayStart,
+    dayBuckets: dayBuckets
   }
 }

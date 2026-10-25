@@ -10,21 +10,29 @@ Item {
   property string fontFamily: ""
 
   property string chartType: "line"
+  // 0 = today, 6 = six days ago
+  property int dayOffset: 0
 
   readonly property color dimColor: Qt.rgba(foreground.r, foreground.g, foreground.b, 0.45)
   readonly property color gridColor: Qt.rgba(foreground.r, foreground.g, foreground.b, 0.14)
 
+  // Re-read the clock on every new sample so day boundaries roll over at midnight.
+  readonly property real now: { root.history; return Date.now() }
+
   function samples() {
-    var h = Array.isArray(history) ? history : []
-    if (h.length === 0) return []
-    return Model.historyBuckets(h, bucketCount())
+    var start = Model.dayStart(root.now, dayOffset)
+    var end = Model.dayStart(root.now, dayOffset - 1)
+    return Model.dayBuckets(history, start, end, bucketCount())
   }
 
   function bucketCount() {
-    if (chartType === "radar") return 12
-    if (chartType === "bar") return 36
+    if (chartType === "radar" || chartType === "bar") return 24
     if (chartType === "line") return 96
     return 48
+  }
+
+  function weekdayLabel(offset) {
+    return ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"][new Date(Model.dayStart(root.now, offset)).getDay()]
   }
 
   implicitHeight: layout.implicitHeight
@@ -39,45 +47,13 @@ Item {
       spacing: Style.space(4)
 
       Repeater {
-        model: ["line", "column", "bar", "radar"]
+        model: [6, 5, 4, 3, 2, 1, 0]
 
-        Item {
-          id: tab
-          required property string modelData
-          readonly property bool active: root.chartType === modelData
-
-          width: tabLabel.implicitWidth + Style.space(14)
-          height: tabLabel.implicitHeight + Style.space(10)
-
-          Text {
-            id: tabLabel
-            anchors.centerIn: parent
-            textFormat: Text.PlainText
-            text: tab.modelData.toUpperCase()
-            color: tab.active ? root.foreground : root.dimColor
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            font.bold: tab.active
-            font.letterSpacing: 1.0
-
-            Behavior on color { ColorAnimation { duration: 160 } }
-          }
-
-          Rectangle {
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            height: 2
-            radius: 1
-            color: root.foreground
-            visible: tab.active
-          }
-
-          MouseArea {
-            anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
-            onClicked: root.chartType = tab.modelData
-          }
+        Tab {
+          required property int modelData
+          label: root.weekdayLabel(modelData)
+          active: root.dayOffset === modelData
+          onClicked: root.dayOffset = modelData
         }
       }
     }
@@ -101,14 +77,103 @@ Item {
         mode: root.chartType
       }
     }
+
+    // < TYPE > pager, same pattern as agx.screen-time's week navigation.
+    Row {
+      anchors.horizontalCenter: parent.horizontalCenter
+      spacing: Style.space(10)
+
+      Chevron { glyph: ""; step: -1 }
+
+      Text {
+        anchors.verticalCenter: parent.verticalCenter
+        textFormat: Text.PlainText
+        text: root.chartType.toUpperCase()
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: true
+        font.letterSpacing: 1.0
+      }
+
+      Chevron { glyph: ""; step: 1 }
+    }
+  }
+
+  readonly property var chartTypes: ["line", "column", "bar", "radar"]
+
+  component Chevron: Text {
+    id: chevron
+    property int step: 1
+    property alias glyph: chevron.text
+    readonly property int target: root.chartTypes.indexOf(root.chartType) + step
+
+    anchors.verticalCenter: parent.verticalCenter
+    color: chevronMouse.enabled && chevronMouse.containsMouse ? root.foreground : root.dimColor
+    opacity: chevronMouse.enabled ? 1.0 : 0.25
+    Behavior on opacity { NumberAnimation { duration: 150 } }
+    font.family: root.fontFamily
+    font.pixelSize: Style.font.bodySmall
+
+    MouseArea {
+      id: chevronMouse
+      anchors.fill: parent
+      anchors.margins: -Style.space(6)
+      hoverEnabled: true
+      enabled: chevron.target >= 0 && chevron.target < root.chartTypes.length
+      cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+      onClicked: root.chartType = root.chartTypes[chevron.target]
+    }
+  }
+
+  component Tab: Item {
+    id: tab
+    property string label: ""
+    property bool active: false
+    signal clicked()
+
+    width: tabLabel.implicitWidth + Style.space(14)
+    height: tabLabel.implicitHeight + Style.space(10)
+
+    Text {
+      id: tabLabel
+      anchors.centerIn: parent
+      textFormat: Text.PlainText
+      text: tab.label
+      color: tab.active ? root.foreground : root.dimColor
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      font.bold: tab.active
+      font.letterSpacing: 1.0
+
+      Behavior on color { ColorAnimation { duration: 160 } }
+    }
+
+    Rectangle {
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.bottom: parent.bottom
+      height: 2
+      radius: 1
+      color: root.foreground
+      visible: tab.active
+    }
+
+    MouseArea {
+      anchors.fill: parent
+      cursorShape: Qt.PointingHandCursor
+      onClicked: tab.clicked()
+    }
   }
 
   component ChartCanvas: Canvas {
     id: chart
 
     property string mode: "line"
+    // One value per time slot of the selected day; null where no sample was taken.
     property var points: root.samples()
     readonly property int count: points.length
+    readonly property int filled: points.filter(function(p) { return p !== null }).length
 
     onModeChanged: requestPaint()
     onPointsChanged: requestPaint()
@@ -148,30 +213,40 @@ Item {
       ctx.lineWidth = 1
 
       var minPoints = mode === "radar" ? 3 : 2
-      if (chart.count < minPoints) {
+      if (chart.filled < minPoints) {
         ctx.font = "bold 10px '" + family + "'"
         ctx.textAlign = "center"
         ctx.textBaseline = "middle"
         ctx.fillStyle = dim
-        ctx.fillText(chart.count === 0 ? "AWAITING TELEMETRY" : "COLLECTING SAMPLES", w / 2, h / 2)
+        var empty = root.dayOffset > 0 ? "NO TELEMETRY" : "AWAITING TELEMETRY"
+        ctx.fillText(chart.filled === 0 ? empty : "COLLECTING SAMPLES", w / 2, h / 2)
         return
       }
 
-      var oldest = chart.points[0].t
-      var newest = chart.points[chart.points.length - 1].t
-      var spanMin = Math.max(1, Math.round((newest - oldest) / 60000))
-      var spanText = spanMin >= 90 ? "-" + Math.round(spanMin / 60) + "H" : "-" + spanMin + "M"
-
       if (mode === "line" || mode === "column") {
-        drawLineAndColumn(ctx, w, h, rgba, label, spanText)
+        drawLineAndColumn(ctx, w, h, rgba, label)
       } else if (mode === "bar") {
-        drawBar(ctx, w, h, rgba, label, spanText)
+        drawBar(ctx, w, h, rgba, label)
       } else {
         drawRadar(ctx, w, h, rgba, label)
       }
     }
 
-    function drawLineAndColumn(ctx, w, h, rgba, label, spanText) {
+    function hourText(hour) {
+      return (hour < 10 ? "0" : "") + hour
+    }
+
+    // Call fn(a, b) for each run of consecutive filled slots, so gaps (sleep, shutdown) stay visible.
+    function forEachRun(fn) {
+      var runStart = -1
+      for (var r = 0; r <= count; r++) {
+        var has = r < count && points[r] !== null
+        if (has && runStart < 0) runStart = r
+        if (!has && runStart >= 0) { fn(runStart, r - 1); runStart = -1 }
+      }
+    }
+
+    function drawLineAndColumn(ctx, w, h, rgba, label) {
       var padX = 30, padTop = 6, padBottom = 14
       var plotW = w - padX - 4
       var plotH = h - padTop - padBottom
@@ -187,82 +262,88 @@ Item {
         label((g * 25) + "%", 2, gy)
       }
 
-      var xAt = function(i) { return padX + plotW * (chart.count === 1 ? 1 : i / (chart.count - 1)) }
-      var clamp = function(v) { return Math.max(0, Math.min(1, v)) }
-      var yAt = function(v) { return bottom - plotH * clamp(v) }
+      var step = plotW / chart.count
+      var xAt = function(i) { return padX + step * (i + 0.5) }
+      var yAt = function(v) { return bottom - plotH * v }
 
       if (mode === "line") {
+        var dot = function(i, r) {
+          ctx.beginPath()
+          ctx.arc(xAt(i), yAt(chart.points[i]), r, 0, Math.PI * 2)
+          ctx.fillStyle = root.foreground
+          ctx.fill()
+        }
 
-        ctx.beginPath()
-        ctx.moveTo(xAt(0), bottom)
-        ctx.lineTo(xAt(0), yAt(chart.points[0].v))
-        for (var i = 1; i < chart.count; i++) ctx.lineTo(xAt(i), yAt(chart.points[i].v))
-        ctx.lineTo(xAt(chart.count - 1), bottom)
-        ctx.closePath()
-        ctx.fillStyle = rgba(0.13)
-        ctx.fill()
+        chart.forEachRun(function(a, b) {
+          // A lone slot has no line to draw, so mark it with a dot.
+          if (a === b) return dot(a, 1.8)
 
-        ctx.beginPath()
-        ctx.moveTo(xAt(0), yAt(chart.points[0].v))
-        for (var l = 1; l < chart.count; l++) ctx.lineTo(xAt(l), yAt(chart.points[l].v))
-        ctx.strokeStyle = root.foreground
-        ctx.lineWidth = 1.5
-        ctx.stroke()
+          ctx.beginPath()
+          ctx.moveTo(xAt(a), bottom)
+          for (var i = a; i <= b; i++) ctx.lineTo(xAt(i), yAt(chart.points[i]))
+          ctx.lineTo(xAt(b), bottom)
+          ctx.closePath()
+          ctx.fillStyle = rgba(0.13)
+          ctx.fill()
 
-        var lx = xAt(chart.count - 1)
-        var ly = yAt(chart.points[chart.count - 1].v)
-        ctx.beginPath()
-        ctx.arc(lx, ly, 2.5, 0, Math.PI * 2)
-        ctx.fillStyle = root.foreground
-        ctx.fill()
+          ctx.beginPath()
+          ctx.moveTo(xAt(a), yAt(chart.points[a]))
+          for (var l = a + 1; l <= b; l++) ctx.lineTo(xAt(l), yAt(chart.points[l]))
+          ctx.strokeStyle = root.foreground
+          ctx.lineWidth = 1.5
+          ctx.stroke()
+        })
+
+        var last = chart.count - 1
+        while (chart.points[last] === null) last--
+        dot(last, 2.5)
       } else {
 
-        var step = plotW / chart.count
         var bw = Math.max(1, Math.min(10, step * 0.66))
         for (var b = 0; b < chart.count; b++) {
-          var v = clamp(chart.points[b].v)
+          if (chart.points[b] === null) continue
           var bx = padX + b * step + (step - bw) / 2
-          var by = bottom - plotH * v
-          ctx.fillStyle = rgba(0.35 + 0.65 * (chart.count === 1 ? 1 : b / (chart.count - 1)))
+          var by = yAt(chart.points[b])
+          ctx.fillStyle = rgba(0.35 + 0.65 * b / (chart.count - 1))
           ctx.fillRect(bx, by, bw, bottom - by)
         }
       }
 
-      label(spanText, padX, h - 3, "left", "bottom")
-      label("NOW", w, h - 3, "right", "bottom")
+      for (var hr = 0; hr <= 24; hr += 6) {
+        label(hourText(hr), padX + plotW * hr / 24, h - 3, hr === 0 ? "left" : (hr === 24 ? "right" : "center"), "bottom")
+      }
     }
 
-    function drawBar(ctx, w, h, rgba, label, spanText) {
+    function drawBar(ctx, w, h, rgba, label) {
       var padL = 42, padTop = 6, padBottom = 16
       var plotW = w - padL - 4
       var rows = chart.count
       var rowH = (h - padTop - padBottom) / rows
       var barH = Math.max(2, Math.min(7, rowH * 0.62))
-      var clamp = function(v) { return Math.max(0, Math.min(1, v)) }
 
       for (var i = 0; i < rows; i++) {
-        var v = clamp(chart.points[i].v)
         var y = padTop + i * rowH + (rowH - barH) / 2
 
         ctx.fillStyle = rgba(0.08)
         ctx.fillRect(padL, y, plotW, barH)
-        ctx.fillStyle = rgba(0.35 + 0.65 * (rows === 1 ? 1 : i / (rows - 1)))
-        ctx.fillRect(padL, y, Math.max(1, plotW * v), barH)
+        if (chart.points[i] !== null) {
+          ctx.fillStyle = rgba(0.35 + 0.65 * i / (rows - 1))
+          ctx.fillRect(padL, y, Math.max(1, plotW * chart.points[i]), barH)
+        }
+        if (i % 6 === 0) label(hourText(i * 24 / rows) + "H", padL - 6, padTop + i * rowH + rowH / 2, "right", "middle")
       }
 
       label("0", padL, h - 3, "left", "bottom")
       label("50", padL + plotW / 2, h - 3, "center", "bottom")
       label("100", padL + plotW, h - 3, "right", "bottom")
-
-      label("NOW", padL - 6, padTop + rowH / 2, "right", "middle")
-      label(spanText, padL - 6, padTop + (rows - 1) * rowH + rowH / 2, "right", "middle")
     }
 
     function drawRadar(ctx, w, h, rgba, label) {
       var cx = w / 2, cy = h / 2
-      var R = Math.min(w / 2, h / 2 - 10)
+      var R = Math.min(w / 2 - 16, h / 2 - 10)
       var n = chart.count
-      var clamp = function(v) { return Math.max(0.04, Math.min(1, v)) }
+      // Keep 0% off the exact center so the point stays visible. `i % n` lets a full-day run wrap back to 00H.
+      var radius = function(i) { return R * Math.max(0.04, chart.points[i % n]) }
       var angle = function(i) { return -Math.PI / 2 + Math.PI * 2 * i / n }
       var px = function(i, r) { return cx + Math.cos(angle(i)) * r }
       var py = function(i, r) { return cy + Math.sin(angle(i)) * r }
@@ -287,28 +368,37 @@ Item {
       }
       ctx.stroke()
 
-      ctx.beginPath()
-      for (var d = 0; d < n; d++) {
-        var v = clamp(chart.points[d].v)
-        if (d === 0) ctx.moveTo(px(d, R * v), py(d, R * v))
-        else ctx.lineTo(px(d, R * v), py(d, R * v))
+      // Fill a wedge from the center for each run; empty hours (sleep, not yet happened) stay blank.
+      var drawRun = function(a, b) {
+        ctx.beginPath()
+        ctx.moveTo(cx, cy)
+        for (var i = a; i <= b; i++) ctx.lineTo(px(i, radius(i)), py(i, radius(i)))
+        ctx.closePath()
+        ctx.fillStyle = rgba(0.20)
+        ctx.fill()
+
+        ctx.beginPath()
+        ctx.moveTo(px(a, radius(a)), py(a, radius(a)))
+        for (var l = a + 1; l <= b; l++) ctx.lineTo(px(l, radius(l)), py(l, radius(l)))
+        ctx.strokeStyle = root.foreground
+        ctx.lineWidth = 1.5
+        ctx.stroke()
       }
-      ctx.closePath()
-      ctx.fillStyle = rgba(0.20)
-      ctx.fill()
-      ctx.strokeStyle = root.foreground
-      ctx.lineWidth = 1.5
-      ctx.stroke()
+      if (chart.filled === n) drawRun(0, n)
+      else chart.forEachRun(drawRun)
 
       ctx.fillStyle = root.foreground
       for (var q = 0; q < n; q++) {
-        var dv = clamp(chart.points[q].v)
+        if (chart.points[q] === null) continue
         ctx.beginPath()
-        ctx.arc(px(q, R * dv), py(q, R * dv), 1.8, 0, Math.PI * 2)
+        ctx.arc(px(q, radius(q)), py(q, radius(q)), 1.8, 0, Math.PI * 2)
         ctx.fill()
       }
 
-      label("100%", cx, cy - R - 6, "center", "middle")
+      label("00H", cx, cy - R - 6, "center", "middle")
+      label("06H", cx + R + 4, cy, "left", "middle")
+      label("12H", cx, cy + R + 6, "center", "middle")
+      label("18H", cx - R - 4, cy, "right", "middle")
     }
   }
 }
