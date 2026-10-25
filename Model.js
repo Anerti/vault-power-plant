@@ -84,6 +84,49 @@ function dayBuckets(history, start, end, count) {
   return out
 }
 
+// Stats for one day of raw samples, or null when it has none. Battery time counts falling runs only, from the
+// sample before the first drop to the last drop, so a plateau at full or at a charge limit is not battery time.
+// A gap over 5 minutes (sleep, shutdown) ends a run and its change is not counted. 30 minutes without a drop also
+// ends a run: plugged in at a charge limit the battery self-discharges ~1% per hours, which is not battery time.
+// shortcut: idle on a large battery can take >30 min per 1% and splits a run; store UPower.onBattery per sample if that shows.
+function daySummary(history, start, end) {
+  var h = (Array.isArray(history) ? history : []).filter(function(s) { return s.t >= start && s.t < end })
+  if (h.length === 0) return null
+  var s = { min: h[0].v, max: h[0].v, recordedMs: 0, batteryMs: 0, drained: 0, charged: 0 }
+  var runStart = -1, runEnd = -1
+  var closeRun = function() { if (runStart >= 0) s.batteryMs += runEnd - runStart; runStart = -1 }
+  for (var i = 1; i < h.length; i++) {
+    var a = h[i - 1], b = h[i]
+    s.min = Math.min(s.min, b.v)
+    s.max = Math.max(s.max, b.v)
+    if (b.t - a.t > 5 * 60 * 1000) { closeRun(); continue }
+    s.recordedMs += b.t - a.t
+    if (b.v > a.v) {
+      s.charged += b.v - a.v
+      closeRun()
+    } else if (b.v < a.v) {
+      s.drained += a.v - b.v
+      if (runStart >= 0 && b.t - runEnd > 30 * 60 * 1000) closeRun()
+      if (runStart < 0) runStart = a.t
+      runEnd = b.t
+    }
+  }
+  closeRun()
+  return s
+}
+
+function durationLabel(ms) {
+  var m = Math.round(ms / 60000)
+  return m < 60 ? m + "m" : Math.floor(m / 60) + "h " + m % 60 + "m"
+}
+
+// omarchy-battery-status prints 0W when power_now exists but cannot be read (some HP batteries); use UPower's rate then.
+function rateLabel(raw, changeRate) {
+  if (parseFloat(raw) > 0) return raw
+  var r = Math.abs(Number(changeRate) || 0)
+  return r > 0 ? Math.round(r * 10) / 10 + "W" : raw
+}
+
 function chargeThresholdActive(device, onBattery, states) {
   var d = device || {}
   var s = states || {}
@@ -203,6 +246,9 @@ if (typeof module !== "undefined") {
     historyPush: historyPush,
     dayStart: dayStart,
     dayBuckets: dayBuckets,
+    daySummary: daySummary,
+    durationLabel: durationLabel,
+    rateLabel: rateLabel,
     agents: agents,
     agentLabel: agentLabel,
     parseAgentCheck: parseAgentCheck,

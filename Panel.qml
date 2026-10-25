@@ -28,11 +28,13 @@ Panel {
   property var agentChoices: []
   property bool noAgentInstalled: false
   property int agentIndex: 0
+  // 0 = summary toggle, 1 = AI report.
+  property int actionIndex: 0
   // Keyboard rows, top to bottom as drawn: up/down picks the row, left/right moves within it.
   property string focusRow: "profiles"
   readonly property var focusRows: agentChoices.length > 0 || noAgentInstalled
-    ? ["profiles", "days", "ai", "agents"]
-    : ["profiles", "days", "ai"]
+    ? ["profiles", "days", "actions", "agents"]
+    : ["profiles", "days", "actions"]
   readonly property bool showPercentage: setting("showPercentage", false) === true
 
   readonly property real openPanelIndicatorWidth: showPercentage && !button.vertical ? button.glyphPaintedWidth : 0
@@ -68,6 +70,8 @@ Panel {
     } else if (focusRow === "days") {
       // Tabs run oldest to newest, so right means a smaller day offset.
       charts.dayOffset = Math.max(0, Math.min(6, charts.dayOffset - dx))
+    } else if (focusRow === "actions") {
+      actionIndex = Model.clampIndex(actionIndex + dx, 2)
     } else if (focusRow === "agents") {
       agentIndex = Model.clampIndex(agentIndex + dx, Math.max(1, agentChoices.length))
     }
@@ -75,7 +79,10 @@ Panel {
 
   function activateCursor() {
     if (focusRow === "profiles") activateSelectedProfile()
-    else if (focusRow === "ai") askAgent()
+    else if (focusRow === "actions") {
+      if (actionIndex === 0) charts.showSummary = !charts.showSummary
+      else askAgent()
+    }
     else if (focusRow === "agents") {
       if (noAgentInstalled) setupAgent()
       else if (agentIndex < agentChoices.length) launchAgent(agentChoices[agentIndex])
@@ -167,6 +174,8 @@ Panel {
     var next = Model.parseKeyValue(raw)
 
     if (Object.keys(next).length === 0) return
+    var device = UPower.displayDevice
+    next.rate = Model.rateLabel(next.rate, device ? device.changeRate : 0)
     batteryInfo = next
   }
 
@@ -246,7 +255,7 @@ Panel {
       noAgentInstalled = check.installed.length === 0
       agentIndex = 0
       // Pressed from the keyboard: land on the choices that just appeared.
-      if (cursorActive && focusRow === "ai") focusRow = "agents"
+      if (cursorActive && focusRow === "actions") focusRow = "agents"
     }
   }
 
@@ -289,6 +298,7 @@ Panel {
       profileIndex = idx >= 0 ? idx : 0
       cursorActive = false
       focusRow = "profiles"
+      actionIndex = 0
     } else {
       agentChoices = []
       noAgentInstalled = false
@@ -664,17 +674,36 @@ Panel {
             tabCursor: root.cursorActive && root.focusRow === "days"
           }
 
-          Button {
-            x: (parent.width - width) / 2
-            iconText: "󰚩"
-            text: "AI report"
-            tooltipText: "Ask an AI agent to analyse the last 7 days"
-            fontSize: Style.font.bodySmall
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
-            bordered: true
-            hasCursor: root.cursorActive && root.focusRow === "ai"
-            onClicked: root.askAgent()
+          Row {
+            id: actionRow
+            width: parent.width
+            spacing: Style.space(6)
+
+            Button {
+              width: (actionRow.width - actionRow.spacing) / 2
+              iconText: charts.showSummary ? "󰄪" : "󰉹"
+              text: charts.showSummary ? "Chart" : "Summary"
+              tooltipText: charts.showSummary ? "Show the selected day's chart" : "Show the selected day's stats"
+              fontSize: Style.font.bodySmall
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              bordered: true
+              hasCursor: root.cursorActive && root.focusRow === "actions" && root.actionIndex === 0
+              onClicked: charts.showSummary = !charts.showSummary
+            }
+
+            Button {
+              width: (actionRow.width - actionRow.spacing) / 2
+              iconText: "󰚩"
+              text: "AI report"
+              tooltipText: "Ask an AI agent to analyse the last 7 days"
+              fontSize: Style.font.bodySmall
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              bordered: true
+              hasCursor: root.cursorActive && root.focusRow === "actions" && root.actionIndex === 1
+              onClicked: root.askAgent()
+            }
           }
 
           Column {

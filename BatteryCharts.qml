@@ -14,6 +14,8 @@ Item {
   property int dayOffset: 0
   // Keyboard cursor sits on the day tabs; the panel owns the focus state.
   property bool tabCursor: false
+  // Show the selected day's stats in place of the chart.
+  property bool showSummary: false
 
   readonly property color dimColor: Qt.rgba(foreground.r, foreground.g, foreground.b, 0.45)
   readonly property color gridColor: Qt.rgba(foreground.r, foreground.g, foreground.b, 0.14)
@@ -26,6 +28,22 @@ Item {
     var end = Model.dayStart(root.now, dayOffset - 1)
     // 96 slots = 15 minutes each.
     return Model.dayBuckets(history, start, end, 96)
+  }
+
+  // [label, value] pairs for the summary view; empty when the day has no samples.
+  readonly property var summaryRows: {
+    var s = Model.daySummary(history, Model.dayStart(now, dayOffset), Model.dayStart(now, dayOffset - 1))
+    if (!s) return []
+    var pct = function(v) { return Math.round(v * 100) + "%" }
+    var hours = s.batteryMs / 3600000
+    return [
+      ["Recorded", Model.durationLabel(s.recordedMs)],
+      ["Range", pct(s.min) + " – " + pct(s.max)],
+      ["On battery", Model.durationLabel(s.batteryMs)],
+      ["Drained", pct(s.drained)],
+      ["Average drain", hours > 0 ? Math.round(s.drained * 1000 / hours) / 10 + "%/h" : "—"],
+      ["Charged", "+" + pct(s.charged)]
+    ]
   }
 
   function weekdayLabel(offset) {
@@ -74,14 +92,67 @@ Item {
 
       ChartCanvas {
         id: chart
+        visible: !root.showSummary
         anchors.fill: parent
         anchors.margins: Style.space(8)
       }
 
+      Column {
+        visible: root.showSummary && root.summaryRows.length > 0
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        anchors.margins: Style.space(14)
+        spacing: Style.space(8)
+
+        Repeater {
+          model: root.summaryRows
+
+          Item {
+            required property var modelData
+            width: parent.width
+            height: rowValue.implicitHeight
+
+            Text {
+              textFormat: Text.PlainText
+              text: modelData[0]
+              color: root.dimColor
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+
+            Text {
+              id: rowValue
+              anchors.right: parent.right
+              textFormat: Text.PlainText
+              text: modelData[1]
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              font.bold: true
+            }
+          }
+        }
+      }
+
+      Text {
+        visible: root.showSummary && root.summaryRows.length === 0
+        anchors.centerIn: parent
+        textFormat: Text.PlainText
+        text: "NO TELEMETRY"
+        color: root.dimColor
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        font.bold: true
+      }
+
       MouseArea {
         id: chartMouse
+        visible: chart.visible
         anchors.fill: chart
         hoverEnabled: true
+        // Hidden by the summary while hovered, so no exit event comes.
+        onVisibleChanged: if (!visible) chart.hoverIndex = -1
         onPositionChanged: function(mouse) { chart.hoverIndex = chart.hasChart ? chart.indexAt(mouse.x, mouse.y) : -1 }
         onExited: chart.hoverIndex = -1
 

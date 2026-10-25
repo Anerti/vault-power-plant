@@ -26,6 +26,32 @@ assert.strictEqual(buckets[23], 1)
 assert.strictEqual(buckets.filter(b => b !== null).length, 2)
 assert.deepStrictEqual(M.dayBuckets([], start, end, 4), [null, null, null, null])
 
+// daySummary: an hour held at 100% plugged in, an hour draining to 40%, a gap, then 10 minutes charging.
+const min = 60 * 1000
+const day = []
+for (let m = 0; m <= 60; m++) day.push({ t: start + m * min, v: 1 })
+for (let k = 1; k <= 60; k++) day.push({ t: start + (60 + k) * min, v: 1 - 0.01 * k })
+for (let k = 0; k <= 10; k++) day.push({ t: start + (200 + k) * min, v: 0.4 + 0.01 * k })
+const summary = M.daySummary(day, start, end)
+assert.strictEqual(Math.round(summary.min * 100), 40)
+assert.strictEqual(summary.max, 1)
+assert.strictEqual(summary.batteryMs, 60 * min, "the plateau at 100% is not battery time")
+assert.strictEqual(Math.round(summary.drained * 100), 60)
+assert.strictEqual(Math.round(summary.charged * 100), 10)
+assert.strictEqual(summary.recordedMs, 130 * min, "the gap is not recorded time")
+assert.strictEqual(M.daySummary(day, end, end + 1000), null)
+// Plugged in at a charge limit: 80% for 3h, self-discharge to 79%, 3h more, to 78%. Only the two drops count.
+const held = []
+for (let m = 0; m <= 360; m++) held.push({ t: start + m * min, v: m < 180 ? 0.8 : m < 360 ? 0.79 : 0.78 })
+assert.strictEqual(M.daySummary(held, start, end).batteryMs, 2 * min, "a slow drop at a charge limit is not battery time")
+assert.strictEqual(M.durationLabel(45 * min), "45m")
+assert.strictEqual(M.durationLabel(130 * min), "2h 10m")
+
+// The status script reads 0W on batteries whose power_now fails; UPower's rate fills in.
+assert.strictEqual(M.rateLabel("12.5W", 3), "12.5W")
+assert.strictEqual(M.rateLabel("0W", -5.6377), "5.6W")
+assert.strictEqual(M.rateLabel("0W", 0), "0W")
+
 // Full at 99% (common battery behaviour) must read as full, like the icon.
 assert.strictEqual(M.modeLabel(battery(0.99, states.FullyCharged), false, states), "Fully charged")
 assert.strictEqual(M.batteryIcon(battery(0.99, states.FullyCharged), false, states), "󰂅")
