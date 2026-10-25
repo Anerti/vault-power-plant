@@ -24,6 +24,15 @@ Panel {
   readonly property string telemetryHistoryPath: telemetryDataDir + "/history.json"
   property bool telemetryReady: false
   property bool telemetryBackupAttempted: false
+  // Installed agents to pick from when no default agent is set; empty hides the picker.
+  property var agentChoices: []
+  property bool noAgentInstalled: false
+  property int agentIndex: 0
+  // Keyboard rows, top to bottom as drawn: up/down picks the row, left/right moves within it.
+  property string focusRow: "profiles"
+  readonly property var focusRows: agentChoices.length > 0 || noAgentInstalled
+    ? ["profiles", "days", "ai", "agents"]
+    : ["profiles", "days", "ai"]
   readonly property bool showPercentage: setting("showPercentage", false) === true
 
   readonly property real openPanelIndicatorWidth: showPercentage && !button.vertical ? button.glyphPaintedWidth : 0
@@ -48,6 +57,29 @@ Panel {
   function activateSelectedProfile() {
     if (profileIndex < 0 || profileIndex >= profiles.length) return
     setProfile(profiles[profileIndex])
+  }
+
+  function moveCursor(dx, dy) {
+    if (!cursorActive) { cursorActive = true; return }
+    if (dy !== 0) {
+      focusRow = focusRows[Model.clampIndex(focusRows.indexOf(focusRow) + dy, focusRows.length)]
+    } else if (focusRow === "profiles") {
+      selectProfileByDelta(dx)
+    } else if (focusRow === "days") {
+      // Tabs run oldest to newest, so right means a smaller day offset.
+      charts.dayOffset = Math.max(0, Math.min(6, charts.dayOffset - dx))
+    } else if (focusRow === "agents") {
+      agentIndex = Model.clampIndex(agentIndex + dx, Math.max(1, agentChoices.length))
+    }
+  }
+
+  function activateCursor() {
+    if (focusRow === "profiles") activateSelectedProfile()
+    else if (focusRow === "ai") askAgent()
+    else if (focusRow === "agents") {
+      if (noAgentInstalled) setupAgent()
+      else if (agentIndex < agentChoices.length) launchAgent(agentChoices[agentIndex])
+    }
   }
 
   function batteryIcon() {
@@ -200,6 +232,40 @@ Panel {
     if (!telemetrySaveTimer.running) telemetrySaveTimer.start()
   }
 
+  function askAgent() {
+    if (agentCheckProc.running) return
+    agentCheckProc.running = true
+  }
+
+  function onAgentCheck(raw) {
+    var check = Model.parseAgentCheck(raw)
+    if (check.defaultAgent) {
+      launchAgent("")
+    } else {
+      agentChoices = check.installed
+      noAgentInstalled = check.installed.length === 0
+      agentIndex = 0
+      // Pressed from the keyboard: land on the choices that just appeared.
+      if (cursorActive && focusRow === "ai") focusRow = "agents"
+    }
+  }
+
+  // Omarchy's picker also installs; it opens the agent without our prompt, so the user retries the report after.
+  function setupAgent() {
+    close()
+    Util.execArgv(["omarchy-menu", "summon", "setup.default.agent"])
+  }
+
+  // Saves `pick` as Omarchy's default agent (when given), then opens the default agent with the prompt.
+  // Writes the defaults file directly: omarchy-default-agent would open the agent itself, without the prompt.
+  function launchAgent(pick) {
+    Util.execArgv(["bash", "-c",
+      'if [[ -n $1 ]]; then mkdir -p "$HOME/.config/omarchy/defaults" && printf "%s\\n" "$1" > "$HOME/.config/omarchy/defaults/agent" || exit 1; fi; exec omarchy-agent --prompt "$2"',
+      "_", pick, Model.agentPrompt(root.batteryHistory, Date.now(), root.batteryInfo, root.activeProfile)])
+    agentChoices = []
+    close()
+  }
+
   IpcHandler {
     target: "omarchy.power"
 
@@ -222,6 +288,10 @@ Panel {
       var idx = profiles.indexOf(activeProfile)
       profileIndex = idx >= 0 ? idx : 0
       cursorActive = false
+      focusRow = "profiles"
+    } else {
+      agentChoices = []
+      noAgentInstalled = false
     }
   }
 
@@ -289,6 +359,15 @@ Panel {
     }
   }
 
+  Process {
+    id: agentCheckProc
+    // Login shell so agents installed through mise are on PATH, as Util.execArgv does for the launch.
+    command: ["bash", "-lc",
+      'd=$(omarchy-default-agent); if [[ -n $d ]] && omarchy-cmd-present "$d"; then echo "$d"; exit; fi; echo; for a; do omarchy-cmd-present "$a" && echo "$a"; done',
+      "_"].concat(Model.agents.map(function(a) { return a.id }))
+    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.onAgentCheck(text) }
+  }
+
   Component.onCompleted: telemetryEnsureDirProc.running = true
 
   Timer { interval: 5000; running: root.opened; repeat: true; onTriggered: root.refresh() }
@@ -307,7 +386,7 @@ Panel {
 
   Timer {
     id: phraseTimer
-    interval: 2800
+    interval: 8000
     running: root.opened && root.rotatingPhrases
     repeat: true
     triggeredOnStart: false
@@ -368,12 +447,8 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      onMoveRequested: function(dx, dy) {
-        if (!root.cursorActive) { root.cursorActive = true; return }
-        if (dx !== 0) root.selectProfileByDelta(dx)
-        else if (dy !== 0) root.selectProfileByDelta(dy)
-      }
-      onActivateRequested: if (root.cursorActive) root.activateSelectedProfile()
+      onMoveRequested: function(dx, dy) { root.moveCursor(dx, dy) }
+      onActivateRequested: if (root.cursorActive) root.activateCursor()
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
@@ -498,7 +573,7 @@ Panel {
           Column {
             width: (parent.width - parent.spacing) / 2
             spacing: Style.spacing.labelGap
-            InfoPair { label: "Battery size"; value: root.batteryInfo.size || "" }
+            InfoPair { label: "Battery size"; value: root.batteryInfo.size || "—" }
             InfoPair { label: "Charge cycles"; value: root.batteryInfo.cycles || "—" }
           }
 
@@ -507,11 +582,11 @@ Panel {
             spacing: Style.spacing.labelGap
             InfoPair {
               label: root.chargeThresholdActive ? "Charge limit" : (root.discharging ? "Time left" : "Time to full")
-              value: root.chargeThresholdActive ? (root.batteryInfo.threshold || "-") : (root.batteryFlowIdle ? "-" : (root.batteryInfo.time || "—"))
+              value: root.chargeThresholdActive ? (root.batteryInfo.threshold || "—") : (root.batteryFlowIdle ? "—" : (root.batteryInfo.time || "—"))
             }
             InfoPair {
-              label: root.chargeThresholdActive ? "Battery state" : (root.discharging ? "Discharging" : "Charging")
-              value: root.chargeThresholdActive ? "Holding" : (root.batteryFull ? "-" : (root.batteryInfo.rate || ""))
+              label: root.chargeThresholdActive ? "Battery state" : "Rate"
+              value: root.chargeThresholdActive ? "Holding" : (root.batteryFull ? "—" : (root.batteryInfo.rate || "—"))
             }
           }
         }
@@ -523,29 +598,8 @@ Panel {
           spacing: Style.space(10)
 
           PanelSectionHeader {
-            text: "TELEMETRY"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
-          }
-
-          BatteryCharts {
-            width: parent.width
-            history: root.batteryHistory
-            foreground: root.accentColor
-            fontFamily: root.bar.fontFamily
-          }
-        }
-
-        PanelSeparator {
-          foreground: root.bar.foreground
-        }
-
-        Column {
-          width: parent.width
-          spacing: Style.space(10)
-
-          PanelSectionHeader {
-            text: "POWER PROFILE"
+            // Omarchy keeps one profile for AC and one for battery; this sets the current source's.
+            text: "POWER PROFILE · " + (root.discharging ? "ON BATTERY" : "ON AC")
             foreground: root.bar.foreground
             fontFamily: root.bar.fontFamily
           }
@@ -575,14 +629,95 @@ Panel {
                 verticalPadding: Style.spacing.controlPaddingY + Style.space(2)
                 bordered: true
                 active: root.activeProfile === modelData
-                hasCursor: root.cursorActive && root.profileIndex === index
+                hasCursor: root.cursorActive && root.focusRow === "profiles" && root.profileIndex === index
                 onClicked: root.setProfile(modelData)
                 onHovered: function(h) {
                   if (h) {
                     root.cursorActive = true
+                    root.focusRow = "profiles"
                     root.profileIndex = index
                   }
                 }
+              }
+            }
+          }
+        }
+
+        PanelSeparator { foreground: root.bar.foreground }
+
+        Column {
+          width: parent.width
+          spacing: Style.space(10)
+
+          PanelSectionHeader {
+            text: "TELEMETRY"
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+          }
+
+          BatteryCharts {
+            id: charts
+            width: parent.width
+            history: root.batteryHistory
+            foreground: root.accentColor
+            fontFamily: root.bar.fontFamily
+            tabCursor: root.cursorActive && root.focusRow === "days"
+          }
+
+          Button {
+            x: (parent.width - width) / 2
+            iconText: "󰚩"
+            text: "AI report"
+            tooltipText: "Ask an AI agent to analyse the last 7 days"
+            fontSize: Style.font.bodySmall
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            bordered: true
+            hasCursor: root.cursorActive && root.focusRow === "ai"
+            onClicked: root.askAgent()
+          }
+
+          Column {
+            visible: root.agentChoices.length > 0 || root.noAgentInstalled
+            width: parent.width
+            spacing: Style.space(6)
+
+            InfoLabel {
+              width: parent.width
+              wrapMode: Text.WordWrap
+              text: root.noAgentInstalled
+                ? "No AI agent installed. Set one up, then ask for the report again."
+                : "No usable default agent. Pick one, it becomes your default and opens with the report:"
+            }
+
+            Flow {
+              width: parent.width
+              spacing: Style.space(6)
+
+              Repeater {
+                model: root.agentChoices
+                Button {
+                  required property string modelData
+                  required property int index
+                  text: Model.agentLabel(modelData)
+                  fontSize: Style.font.bodySmall
+                  foreground: root.bar.foreground
+                  fontFamily: root.bar.fontFamily
+                  bordered: true
+                  hasCursor: root.cursorActive && root.focusRow === "agents" && root.agentIndex === index
+                  onClicked: root.launchAgent(modelData)
+                }
+              }
+
+              Button {
+                visible: root.noAgentInstalled
+                text: "Set up agent"
+                fontSize: Style.font.bodySmall
+                foreground: root.bar.foreground
+                fontFamily: root.bar.fontFamily
+                bordered: true
+                hasCursor: root.cursorActive && root.focusRow === "agents"
+                onClicked: root.setupAgent()
               }
             }
           }

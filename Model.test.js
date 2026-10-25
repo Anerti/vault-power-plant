@@ -42,4 +42,22 @@ assert.strictEqual(M.chargeThresholdActive(battery(0.5, states.Charging, { chang
 assert.strictEqual(M.chargeThresholdActive(battery(0.8, states.FullyCharged), true, states), false)
 assert.strictEqual(M.modeLabel(battery(0.8, states.FullyCharged), false, states), "Threshold")
 
+// Agent check: default first, installed agents after; an unset default leaves the first line empty.
+assert.deepStrictEqual(M.parseAgentCheck("opencode\n"), { defaultAgent: "opencode", installed: [] })
+assert.deepStrictEqual(M.parseAgentCheck("\nclaude\ncodex\n"), { defaultAgent: "", installed: ["claude", "codex"] })
+assert.deepStrictEqual(M.parseAgentCheck(""), { defaultAgent: "", installed: [] })
+assert.strictEqual(M.agentLabel("cursor-agent"), "Cursor CLI")
+assert.strictEqual(M.agentLabel("unknown"), "unknown")
+
+// The prompt carries the data itself, so the agent never needs a command or file.
+const prompt = M.agentPrompt([{ t: start, v: 0.5 }, { t: start + 15 * 60 * 1000, v: 0.48 }], noon, { cycles: "19" }, "balanced")
+assert.ok(prompt.includes("Do not run commands"))
+assert.ok(prompt.includes("cycles 19") && prompt.includes("balanced"))
+assert.ok(prompt.includes("Thu: 50 48 - "), "today's slots, gaps as -")
+assert.ok(prompt.includes("Fri: no data"), "days before the history are marked empty")
+assert.ok(!/history\.json|upower|journalctl/.test(prompt))
+const fullWeek = []
+for (let t = M.dayStart(noon, 6); t < noon; t += 60 * 1000) fullWeek.push({ t, v: 1 })
+assert.ok(M.agentPrompt(fullWeek, noon, {}, "").length < 16000, "prompt goes through argv, keep it small")
+
 console.log("Model.test.js: ok")
