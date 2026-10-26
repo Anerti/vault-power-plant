@@ -10,7 +10,8 @@ A battery and power-profile panel for the Omarchy bar, in the spirit of the Vaul
 Live charge, rate and time left. Seven days of telemetry. One click to an AI battery report.<br>
 
 **Know where your power goes.**<br>
-No cloud. No account. The history stays on your disk.
+No cloud. No account. The history stays on your disk,<br>
+unless you ask for an AI report.
 
 <br>
 
@@ -39,6 +40,8 @@ omarchy plugin enable anerti.vault-power-plant
 ```
 
 The widget appears in the center of the bar. Move it with `omarchy bar move`.
+
+Vault-Tec power replaces the built-in power widget and answers its `omarchy.power` shortcut. Remove `omarchy.power` from your bar, or the shortcut may open the wrong panel.
 
 | Task | Command |
 |------|---------|
@@ -83,21 +86,27 @@ Power-saver, Balanced and Performance sit side by side. The profile you pick is 
 
 ### Seven days of telemetry
 
-The charge level is sampled once a minute and kept for seven days. Pick a day from the tabs to see its 24-hour curve. Hover the curve to read the exact level at any moment.
+Click **TELEMETRY**, or press `Enter` on its chevron, to fold the section away. The fold is saved with your bar layout, so it survives restarts. The charge level is sampled once a minute and kept for seven days. Pick a day from the tabs to see its 24-hour curve. Hover the curve to read the exact level at any moment.
 
-> **Your data stays local.** The history lives in `~/.config/omarchy/vault-power-plant/history.json`. It is written every ten minutes and survives restarts. If the file is ever corrupted, it is set aside and a fresh one is started, never silently overwritten.
+> **Your data stays local.** The history lives in `~/.config/omarchy/vault-power-plant/history.json`. It is written every ten minutes and when the shell stops, so it survives restarts. If the file is ever corrupted, it is set aside and a fresh one is started, never silently overwritten.
 
 ### Day summary
 
-**Summary** swaps the chart for the selected day's numbers: time recorded, charge range, time on battery, total drained, average drain per hour, and total charged.
+Below the chart, **Chart**, **Summary** and **Apps** pick what the box shows. **Summary** swaps the chart for the selected day's numbers: time recorded, charge range, time on battery, total drained, average drain per hour, and total charged.
 
 Time on battery counts real discharge only. A plateau at 100% does not count, and neither does the slow self-discharge while plugged in at a charge limit. Sleep and shutdown gaps are left out.
 
+### Battery use per app
+
+**Apps** swaps the chart for every app that drew on the battery that day, heaviest first, such as `brave 31.8%`, `claude 10.6%`. A long list scrolls. The top three names are highlighted in the theme's accent, brightest first.
+
+Linux has no per-app power meter, so this is an estimate. While on battery, the panel reads each process's CPU time with `ps` once a minute. The day's measured drain is then split between apps by their share of that CPU time. Screen and idle drain get spread across the apps too, and a process that exits loses its last minute. The totals are kept for seven days in the same `history.json`.
+
 ### AI battery report
 
-**AI report** hands seven days of 15-minute averages, the current battery status and the active power profile to your default AI agent. You get back a summary of the week, a per-day table, anything unusual, and the three to five changes that would help your battery most.
+The robot icon on the **TELEMETRY** header hands seven days of 15-minute averages, each day's top ten apps by battery use, the current battery status and the active power profile to your default AI agent. You get back a summary of the week, a per-day table, anything unusual, the apps that cost the most or look abnormal, and the three to five changes that would help your battery most.
 
-The data travels inside the prompt itself. The agent needs no command, file or web access, and it is told not to use any. If no default agent is set, the panel lists the agents it finds installed. The one you pick becomes your default.
+The data travels inside the prompt itself, so it goes to whichever provider runs your agent. Nothing is sent until you click. The agent needs no command, file or web access, and it is told not to use any. If no default agent is set, the panel lists the agents it finds installed. The one you pick becomes your default.
 
 ### Keyboard first
 
@@ -105,8 +114,8 @@ Every control is reachable without the mouse.
 
 | Key | Action |
 |-----|--------|
-| `↑` `↓` / `k` `j` | Move between rows: profiles, days, actions, agents |
-| `←` `→` / `h` `l` | Move within a row |
+| `↑` `↓` / `k` `j` | Move between rows: profiles, telemetry header, days, views, agents |
+| `←` `→` / `h` `l` | Move within a row; on days and views this switches directly |
 | `Enter` / `Space` | Activate the selection |
 | `Tab` / `Shift+Tab` | Switch to the next or previous bar panel |
 | `Esc` | Close the panel |
@@ -130,9 +139,10 @@ Omarchy reloads the plugin as soon as you save any file under `~/.config/omarchy
 | File | Role |
 |------|------|
 | `Panel.qml` | Bar widget and panel: data sources, keyboard model, layout |
-| `BatteryCharts.qml` | Day tabs, 24-hour chart and day summary |
+| `Telemetry.qml` | Background service, one per shell: samples charge and app CPU, owns `history.json` |
+| `BatteryCharts.qml` | Day tabs, 24-hour chart, day summary and per-app list |
 | `PanelArt.qml` | Vault Boy artwork and dialogue bubble |
-| `Model.js` | Parsing, telemetry buckets, day stats, AI prompt |
+| `Model.js` | Parsing, telemetry buckets, day stats, app usage, AI prompt |
 | `Model.test.js` | Assertion tests for `Model.js` |
 
 ---

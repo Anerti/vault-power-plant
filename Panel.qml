@@ -1,5 +1,4 @@
 import QtQuick
-import Quickshell
 import Quickshell.Io
 import Quickshell.Services.UPower
 import qs.Commons
@@ -18,24 +17,24 @@ Panel {
   property int profileIndex: 0
   property bool cursorActive: false
 
-  property var batteryHistory: []
-  readonly property int batteryHistoryMax: 7 * 1440
-  readonly property string telemetryDataDir: Quickshell.env("HOME") + "/.config/omarchy/vault-power-plant"
-  readonly property string telemetryHistoryPath: telemetryDataDir + "/history.json"
-  property bool telemetryReady: false
-  property bool telemetryBackupAttempted: false
-  // Installed agents to pick from when no default agent is set; empty hides the picker.
+  readonly property var telemetry: bar && bar.shell ? bar.shell.serviceFor(moduleName) : null
+  readonly property var batteryHistory: telemetry ? telemetry.batteryHistory : []
+  readonly property var appUsage: telemetry ? telemetry.appUsage : ({})
   property var agentChoices: []
   property bool noAgentInstalled: false
   property int agentIndex: 0
-  // 0 = summary toggle, 1 = AI report.
-  property int actionIndex: 0
-  // Keyboard rows, top to bottom as drawn: up/down picks the row, left/right moves within it.
+  property int headerIndex: 1
+  readonly property var viewOptions: [
+    { value: "chart", label: "Chart", icon: "󰄪" },
+    { value: "summary", label: "Summary", icon: "󰉹", tooltip: "Day stats" },
+    { value: "apps", label: "Apps", icon: "󰀻", tooltip: "Estimated drain per app" }
+  ]
   property string focusRow: "profiles"
-  readonly property var focusRows: agentChoices.length > 0 || noAgentInstalled
-    ? ["profiles", "days", "actions", "agents"]
-    : ["profiles", "days", "actions"]
+  readonly property var focusRows: ["profiles", "telemetry"]
+    .concat(telemetryOpen ? ["days", "views"] : [])
+    .concat(agentChoices.length > 0 || noAgentInstalled ? ["agents"] : [])
   readonly property bool showPercentage: setting("showPercentage", false) === true
+  readonly property bool telemetryOpen: setting("telemetryOpen", true) !== false
 
   readonly property real openPanelIndicatorWidth: showPercentage && !button.vertical ? button.glyphPaintedWidth : 0
   readonly property bool batteryPresent: {
@@ -67,21 +66,28 @@ Panel {
       focusRow = focusRows[Model.clampIndex(focusRows.indexOf(focusRow) + dy, focusRows.length)]
     } else if (focusRow === "profiles") {
       selectProfileByDelta(dx)
+    } else if (focusRow === "telemetry") {
+      headerIndex = Model.clampIndex(headerIndex + dx, 2)
     } else if (focusRow === "days") {
-      // Tabs run oldest to newest, so right means a smaller day offset.
       charts.dayOffset = Math.max(0, Math.min(6, charts.dayOffset - dx))
-    } else if (focusRow === "actions") {
-      actionIndex = Model.clampIndex(actionIndex + dx, 2)
+    } else if (focusRow === "views") {
+      var i = viewOptions.findIndex(function(o) { return o.value === charts.view })
+      charts.view = viewOptions[Model.clampIndex(i + dx, viewOptions.length)].value
     } else if (focusRow === "agents") {
       agentIndex = Model.clampIndex(agentIndex + dx, Math.max(1, agentChoices.length))
     }
   }
 
+  function toggleTelemetry() {
+    saveSetting("telemetryOpen", !telemetryOpen)
+    if (focusRows.indexOf(focusRow) < 0) focusRow = "telemetry"
+  }
+
   function activateCursor() {
     if (focusRow === "profiles") activateSelectedProfile()
-    else if (focusRow === "actions") {
-      if (actionIndex === 0) charts.showSummary = !charts.showSummary
-      else askAgent()
+    else if (focusRow === "telemetry") {
+      if (headerIndex === 0) askAgent()
+      else toggleTelemetry()
     }
     else if (focusRow === "agents") {
       if (noAgentInstalled) setupAgent()
@@ -99,10 +105,6 @@ Panel {
     return Model.modeLabel(device, root.discharging, upowerStates())
   }
 
-  readonly property bool fullyCharged: {
-    var device = UPower.displayDevice
-    return device && device.isPresent && device.state === UPowerDeviceState.FullyCharged && !root.chargeThresholdActive
-  }
   readonly property bool discharging: {
     var device = UPower.displayDevice
     return !!(device && device.isPresent && UPower.onBattery)
@@ -111,7 +113,7 @@ Panel {
     var device = UPower.displayDevice
     return Model.chargeThresholdActive(device, root.discharging, upowerStates())
   }
-  readonly property bool batteryFull: fullyCharged || (!root.discharging && batteryFraction >= 1)
+  readonly property bool batteryFull: Model.batteryFull(UPower.displayDevice, root.discharging, upowerStates())
   readonly property bool batteryFlowIdle: batteryFull || chargeThresholdActive
 
   readonly property real batteryFraction: {
@@ -151,7 +153,6 @@ Panel {
   property int phraseIndex: 0
 
   readonly property var activePhrases: {
-    if (fullyCharged) return []
     if (charging) return chargingPhrases
     if (discharging) return onBatteryPhrases
     return []
@@ -198,47 +199,15 @@ Panel {
     actionProc.running = true
   }
 
-  function togglePercentage() {
-    root.settings = Object.assign({}, root.settings, { showPercentage: !root.showPercentage })
+  function saveSetting(name, value) {
+    var next = {}
+    next[name] = value
+    root.settings = Object.assign({}, root.settings, next)
     if (root.bar && root.bar.shell) root.bar.shell.updateEntryInline(root.moduleName, root.settings)
   }
 
-  function onTelemetryLoaded() {
-    var list = telemetryAdapter.samples
-    // JsonAdapter hands back a Qt sequence, not a JS array, so Array.isArray() is false here.
-    var checks = list ? Array.from(list) : []
-    var clean = []
-    for (var i = 0; i < checks.length; i++) {
-      var s = checks[i]
-      if (s && typeof s.t === "number" && typeof s.v === "number" && s.v >= 0 && s.v <= 1)
-        clean.push({ t: s.t, v: s.v })
-    }
-    clean = clean.concat(root.batteryHistory)
-    clean.sort(function(a, b) { return a.t - b.t })
-    var cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000
-    var kept = []
-    for (var j = 0; j < clean.length; j++) {
-      if (kept.length > 0 && clean[j].t === kept[kept.length - 1].t) continue
-      if (clean[j].t >= cutoff) kept.push(clean[j])
-    }
-    while (kept.length > root.batteryHistoryMax) kept.shift()
-    root.batteryHistory = kept
-    root.telemetryReady = true
-  }
-
-  function onTelemetryLoadFailed() {
-    console.warn("anerti.vault-power-plant: telemetry history load failed, starting empty")
-    if (!root.telemetryBackupAttempted) {
-      root.telemetryBackupAttempted = true
-      telemetryBackupProc.running = true
-    }
-    root.telemetryReady = true
-  }
-
-  function persistHistory() {
-    if (!root.telemetryReady) return
-    // start(), not restart(): the next sample lands before 10 min, so restart() would never fire.
-    if (!telemetrySaveTimer.running) telemetrySaveTimer.start()
+  function togglePercentage() {
+    saveSetting("showPercentage", !root.showPercentage)
   }
 
   function askAgent() {
@@ -254,23 +223,19 @@ Panel {
       agentChoices = check.installed
       noAgentInstalled = check.installed.length === 0
       agentIndex = 0
-      // Pressed from the keyboard: land on the choices that just appeared.
-      if (cursorActive && focusRow === "actions") focusRow = "agents"
+      if (cursorActive && focusRow === "telemetry") focusRow = "agents"
     }
   }
 
-  // Omarchy's picker also installs; it opens the agent without our prompt, so the user retries the report after.
   function setupAgent() {
     close()
     Util.execArgv(["omarchy-menu", "summon", "setup.default.agent"])
   }
 
-  // Saves `pick` as Omarchy's default agent (when given), then opens the default agent with the prompt.
-  // Writes the defaults file directly: omarchy-default-agent would open the agent itself, without the prompt.
   function launchAgent(pick) {
     Util.execArgv(["bash", "-c",
       'if [[ -n $1 ]]; then mkdir -p "$HOME/.config/omarchy/defaults" && printf "%s\\n" "$1" > "$HOME/.config/omarchy/defaults/agent" || exit 1; fi; exec omarchy-agent --prompt "$2"',
-      "_", pick, Model.agentPrompt(root.batteryHistory, Date.now(), root.batteryInfo, root.activeProfile)])
+      "_", pick, Model.agentPrompt(root.batteryHistory, Date.now(), root.batteryInfo, root.activeProfile, root.appUsage)])
     agentChoices = []
     close()
   }
@@ -298,7 +263,7 @@ Panel {
       profileIndex = idx >= 0 ? idx : 0
       cursorActive = false
       focusRow = "profiles"
-      actionIndex = 0
+      headerIndex = 1
     } else {
       agentChoices = []
       noAgentInstalled = false
@@ -328,71 +293,15 @@ Panel {
     onExited: root.refresh()
   }
 
-  FileView {
-    id: telemetryFile
-    path: root.telemetryHistoryPath
-    printErrors: true
-    atomicWrites: true
-    onLoaded: root.onTelemetryLoaded()
-    onLoadFailed: root.onTelemetryLoadFailed()
-
-    JsonAdapter {
-      id: telemetryAdapter
-      property var samples: []
-    }
-  }
-
-  Process {
-    id: telemetryEnsureDirProc
-    command: ["bash", "-c",
-      "mkdir -p \"$1\"; [[ -f \"$2\" ]] || printf '{\"samples\":[]}\\n' > \"$2\"",
-      "_", root.telemetryDataDir, root.telemetryHistoryPath]
-    onExited: telemetryFile.reload()
-  }
-
-  Process {
-    id: telemetryBackupProc
-    // Without python3 we cannot tell a corrupt file from a valid one, so leave it alone.
-    command: ["bash", "-c",
-      "if [[ -s \"$1\" ]] && command -v python3 >/dev/null && ! python3 -c 'import json,sys; json.load(open(sys.argv[1]))' \"$1\" 2>/dev/null; then mv -f \"$1\" \"$1.corrupt-$(date +%s)\"; fi",
-      "_", root.telemetryHistoryPath]
-  }
-
-  // Batch writes: the full 7-day history is ~10k samples, too much to rewrite every minute.
-  Timer {
-    id: telemetrySaveTimer
-    interval: 10 * 60 * 1000
-    repeat: false
-    onTriggered: {
-      telemetryAdapter.samples = root.batteryHistory
-      telemetryFile.writeAdapter()
-    }
-  }
-
   Process {
     id: agentCheckProc
-    // Login shell so agents installed through mise are on PATH, as Util.execArgv does for the launch.
     command: ["bash", "-lc",
       'd=$(omarchy-default-agent); if [[ -n $d ]] && omarchy-cmd-present "$d"; then echo "$d"; exit; fi; echo; for a; do omarchy-cmd-present "$a" && echo "$a"; done',
       "_"].concat(Model.agents.map(function(a) { return a.id }))
     stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.onAgentCheck(text) }
   }
 
-  Component.onCompleted: telemetryEnsureDirProc.running = true
-
   Timer { interval: 5000; running: root.opened; repeat: true; onTriggered: root.refresh() }
-
-  Timer {
-    interval: 60000
-    running: true
-    repeat: true
-    triggeredOnStart: true
-    onTriggered: {
-      if (!root.batteryPresent || !root.telemetryReady) return
-      root.batteryHistory = Model.historyPush(root.batteryHistory, root.batteryFraction, root.batteryHistoryMax)
-      root.persistHistory()
-    }
-  }
 
   Timer {
     id: phraseTimer
@@ -566,7 +475,7 @@ Panel {
             Behavior on color { ColorAnimation { duration: 220 } }
 
             SequentialAnimation on opacity {
-              running: root.charging && !root.fullyCharged && root.opened
+              running: root.charging && root.opened
               loops: Animation.Infinite
               alwaysRunToEnd: true
               NumberAnimation { from: 1.0; to: 0.55; duration: 950; easing.type: Easing.InOutSine }
@@ -608,7 +517,6 @@ Panel {
           spacing: Style.space(10)
 
           PanelSectionHeader {
-            // Omarchy keeps one profile for AC and one for battery; this sets the current source's.
             text: "POWER PROFILE · " + (root.discharging ? "ON BATTERY" : "ON AC")
             foreground: root.bar.foreground
             fontFamily: root.bar.fontFamily
@@ -659,50 +567,97 @@ Panel {
           width: parent.width
           spacing: Style.space(10)
 
-          PanelSectionHeader {
-            text: "TELEMETRY"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
+          Item {
+            id: telemetryHeader
+            readonly property bool hasCursor: root.cursorActive && root.focusRow === "telemetry"
+            width: parent.width
+            implicitHeight: Math.max(telemetryTitle.implicitHeight + Style.space(6), reportButton.height)
+
+            PanelSectionHeader {
+              id: telemetryTitle
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              text: "TELEMETRY"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+            }
+
+            Text {
+              id: telemetryChevron
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              textFormat: Text.PlainText
+              text: root.telemetryOpen ? "󰅀" : "󰅂"
+              color: telemetryTitle.color
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+
+            Rectangle {
+              anchors.fill: parent
+              anchors.leftMargin: -Style.space(4)
+              anchors.rightMargin: -Style.space(4)
+              radius: Style.cornerRadius
+              color: "transparent"
+              border.width: 1
+              border.color: Qt.rgba(root.bar.foreground.r, root.bar.foreground.g, root.bar.foreground.b, 0.45)
+              visible: telemetryHeader.hasCursor && root.headerIndex === 1
+            }
+
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.toggleTelemetry()
+            }
+
+            PanelActionButton {
+              id: reportButton
+              anchors.right: telemetryChevron.left
+              anchors.rightMargin: Style.space(10)
+              anchors.verticalCenter: parent.verticalCenter
+              iconText: "󰚩"
+              fontSize: Style.font.bodySmall
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              tooltipText: "AI report · shares 7 days of data"
+              hasCursor: telemetryHeader.hasCursor && root.headerIndex === 0
+              onClicked: root.askAgent()
+            }
           }
 
           BatteryCharts {
             id: charts
+            visible: root.telemetryOpen
             width: parent.width
             history: root.batteryHistory
+            appUsage: root.appUsage
             foreground: root.accentColor
             fontFamily: root.bar.fontFamily
             tabCursor: root.cursorActive && root.focusRow === "days"
           }
 
           Row {
-            id: actionRow
+            id: viewRow
+            visible: root.telemetryOpen
             width: parent.width
             spacing: Style.space(6)
 
-            Button {
-              width: (actionRow.width - actionRow.spacing) / 2
-              iconText: charts.showSummary ? "󰄪" : "󰉹"
-              text: charts.showSummary ? "Chart" : "Summary"
-              tooltipText: charts.showSummary ? "Show the selected day's chart" : "Show the selected day's stats"
-              fontSize: Style.font.bodySmall
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
-              bordered: true
-              hasCursor: root.cursorActive && root.focusRow === "actions" && root.actionIndex === 0
-              onClicked: charts.showSummary = !charts.showSummary
-            }
-
-            Button {
-              width: (actionRow.width - actionRow.spacing) / 2
-              iconText: "󰚩"
-              text: "AI report"
-              tooltipText: "Ask an AI agent to analyse the last 7 days"
-              fontSize: Style.font.bodySmall
-              foreground: root.bar.foreground
-              fontFamily: root.bar.fontFamily
-              bordered: true
-              hasCursor: root.cursorActive && root.focusRow === "actions" && root.actionIndex === 1
-              onClicked: root.askAgent()
+            Repeater {
+              model: root.viewOptions
+              Button {
+                required property var modelData
+                width: (viewRow.width - viewRow.spacing * (root.viewOptions.length - 1)) / root.viewOptions.length
+                iconText: modelData.icon
+                text: modelData.label
+                tooltipText: modelData.tooltip || ""
+                fontSize: Style.font.bodySmall
+                foreground: root.bar.foreground
+                fontFamily: root.bar.fontFamily
+                bordered: true
+                active: charts.view === modelData.value
+                hasCursor: root.cursorActive && root.focusRow === "views" && active
+                onClicked: charts.view = modelData.value
+              }
             }
           }
 

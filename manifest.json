@@ -3,12 +3,14 @@
   "id": "anerti.vault-power-plant",
   "name": "Vault-Tec power",
   "version": "1.0.0",
-  "author": "Omarchy",
+  "author": "Anerti",
   "description": "Battery, power profile, and system stats",
   "kinds": [
+    "service",
     "bar-widget"
   ],
   "entryPoints": {
+    "service": "Telemetry.qml",
     "barWidget": "Panel.qml"
   },
   "barWidget": {

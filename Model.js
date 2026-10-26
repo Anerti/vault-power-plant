@@ -60,6 +60,27 @@ function historyPush(history, fraction, maxSamples) {
   return next
 }
 
+function mergeTelemetry(stored, current, now, maxSamples) {
+  var cutoff = now - 7 * 24 * 60 * 60 * 1000
+  var all = (Array.isArray(stored.samples) ? stored.samples : []).filter(function(s) {
+    return s && typeof s.t === "number" && typeof s.v === "number" && s.v >= 0 && s.v <= 1
+  }).map(function(s) { return { t: s.t, v: s.v } }).concat(current.samples || [])
+  all.sort(function(a, b) { return a.t - b.t })
+  var samples = []
+  for (var i = 0; i < all.length; i++) {
+    if (samples.length > 0 && all[i].t === samples[samples.length - 1].t) continue
+    if (all[i].t >= cutoff) samples.push(all[i])
+  }
+  var apps = {}
+  var dayCutoff = dayStart(now, 6)
+  for (var day in stored.apps || {}) {
+    if (isNaN(day) || Number(day) < dayCutoff) continue
+    apps[day] = {}
+    for (var app in stored.apps[day]) if (typeof stored.apps[day][app] === "number" && stored.apps[day][app] > 0) apps[day][app] = stored.apps[day][app]
+  }
+  return { samples: samples.slice(Math.max(0, samples.length - maxSamples)), apps: Object.assign(apps, current.apps) }
+}
+
 function dayStart(now, offset) {
   var d = new Date(now)
   d.setHours(0, 0, 0, 0)
@@ -67,7 +88,6 @@ function dayStart(now, offset) {
   return d.getTime()
 }
 
-// Average samples into `count` equal time slots of [start, end); empty slots are null.
 function dayBuckets(history, start, end, count) {
   var h = Array.isArray(history) ? history : []
   var sums = [], ns = []
@@ -84,11 +104,6 @@ function dayBuckets(history, start, end, count) {
   return out
 }
 
-// Stats for one day of raw samples, or null when it has none. Battery time counts falling runs only, from the
-// sample before the first drop to the last drop, so a plateau at full or at a charge limit is not battery time.
-// A gap over 5 minutes (sleep, shutdown) ends a run and its change is not counted. 30 minutes without a drop also
-// ends a run: plugged in at a charge limit the battery self-discharges ~1% per hours, which is not battery time.
-// shortcut: idle on a large battery can take >30 min per 1% and splits a run; store UPower.onBattery per sample if that shows.
 function daySummary(history, start, end) {
   var h = (Array.isArray(history) ? history : []).filter(function(s) { return s.t >= start && s.t < end })
   if (h.length === 0) return null
@@ -115,12 +130,48 @@ function daySummary(history, start, end) {
   return s
 }
 
+function parsePs(raw) {
+  var out = {}
+  var lines = String(raw || "").split("\n")
+  for (var i = 0; i < lines.length; i++) {
+    var parts = lines[i].trim().split(/\s+/)
+    if (parts.length < 3 || isNaN(parts[1])) continue
+    out[parts[0]] = { s: Number(parts[1]), app: parts.slice(2).join(" ") }
+  }
+  return out
+}
+
+function cpuDeltas(prev, next) {
+  var out = {}
+  for (var pid in next) {
+    var p = prev[pid]
+    var d = p && p.app === next[pid].app && p.s <= next[pid].s ? next[pid].s - p.s : next[pid].s
+    if (d > 0) out[next[pid].app] = (out[next[pid].app] || 0) + d
+  }
+  return out
+}
+
+function addAppUsage(usage, dayKey, deltas, cutoff) {
+  var next = {}
+  for (var k in usage || {}) if (Number(k) >= cutoff) next[k] = Object.assign({}, usage[k])
+  var day = next[dayKey] || (next[dayKey] = {})
+  for (var app in deltas) day[app] = (day[app] || 0) + deltas[app]
+  return next
+}
+
+function appUsageRows(apps, drained) {
+  var names = Object.keys(apps || {})
+  var total = names.reduce(function(sum, n) { return sum + apps[n] }, 0)
+  if (total <= 0 || !(drained > 0)) return []
+  names.sort(function(a, b) { return apps[b] - apps[a] })
+  return names.map(function(n) { return [n, drained * apps[n] / total] })
+}
+
 function durationLabel(ms) {
   var m = Math.round(ms / 60000)
   return m < 60 ? m + "m" : Math.floor(m / 60) + "h " + m % 60 + "m"
 }
 
-// omarchy-battery-status prints 0W when power_now exists but cannot be read (some HP batteries); use UPower's rate then.
 function rateLabel(raw, changeRate) {
   if (parseFloat(raw) > 0) return raw
   var r = Math.abs(Number(changeRate) || 0)
@@ -156,18 +207,22 @@ function batteryIcon(device, onBattery, states) {
   return defaultIcons[index]
 }
 
+function batteryFull(device, onBattery, states) {
+  var d = device || {}
+  if (!d.isPresent || onBattery || chargeThresholdActive(d, onBattery, states)) return false
+  return d.state === states.FullyCharged || d.percentage >= 1
+}
+
 function modeLabel(device, onBattery, states) {
   var d = device || {}
   if (!d.isPresent) return ""
 
   if (chargeThresholdActive(d, onBattery, states)) return "Threshold"
   if (onBattery) return "On battery"
-  if (d.state === states.FullyCharged || d.percentage >= 1) return "Fully charged"
+  if (batteryFull(d, onBattery, states)) return "Fully charged"
   return "Charging"
 }
 
-// Agents omarchy-agent can launch, labelled as in Omarchy's Default Agent menu.
-// Crush is left out: with a prompt it runs `crush run`, which exits and closes the terminal over the report.
 var agents = [
   { id: "claude", label: "Claude" },
   { id: "codex", label: "Codex" },
@@ -188,7 +243,6 @@ function agentLabel(id) {
   return id
 }
 
-// First line: the default agent when it is set and installed, else empty. Then one installed agent per line.
 function parseAgentCheck(raw) {
   var lines = String(raw || "").split("\n")
   var installed = []
@@ -196,19 +250,24 @@ function parseAgentCheck(raw) {
   return { defaultAgent: lines[0].trim(), installed: installed }
 }
 
-// The data goes in the prompt so the agent needs no command or file: omarchy-agent skips its approval prompts.
-// 15-minute averages keep 7 days near 3 KB, far under the 128 KB argv limit.
-function agentPrompt(history, now, info, profile) {
+function agentPrompt(history, now, info, profile, appUsage) {
   var status = Object.keys(info || {}).map(function(k) { return k + " " + info[k] }).join(", ")
-  var days = []
+  var days = [], appDays = []
   for (var offset = 6; offset >= 0; offset--) {
     var start = dayStart(now, offset)
-    var slots = dayBuckets(history, start, dayStart(now, offset - 1), 96)
+    var end = dayStart(now, offset - 1)
+    var slots = dayBuckets(history, start, end, 96)
     var d = new Date(start)
     var label = d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2) + " " +
       ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getDay()]
     var empty = slots.every(function(v) { return v === null })
     days.push(label + ": " + (empty ? "no data" : slots.map(function(v) { return v === null ? "-" : Math.round(v * 100) }).join(" ")))
+    var s = daySummary(history, start, end)
+    var apps = (appUsage || {})[start] || {}
+    var rows = appUsageRows(apps, s ? s.drained : 0).slice(0, 10)
+    if (rows.length > 0) appDays.push(label + ": " + rows.map(function(r) {
+      return r[0] + " " + Math.round(r[1] * 1000) / 10 + "% (" + Math.round(apps[r[0]] / 60) + " CPU min)"
+    }).join(", "))
   }
   return [
     "Act as a data scientist specialised in laptop power and battery health. Analyse my battery usage over the last 7 days and tell me how to get the best out of this laptop's battery.",
@@ -221,11 +280,15 @@ function agentPrompt(history, now, info, profile) {
     "Charge level in % per 15-minute slot, local time, 96 slots per day from 00:00. \"-\" means no sample: the laptop was off, asleep or the desktop shell was not running.",
     days.join("\n"),
     "",
+    "Battery drain per app, top 10 per day: estimated % of battery each app used, then the CPU minutes it ran while on battery. The day's measured drain is split between apps by their share of on-battery CPU time, so screen and idle drain are spread across them too. Process names are cut to 15 characters.",
+    appDays.length > 0 ? appDays.join("\n") : "No per-app data recorded yet.",
+    "",
     "Give me:",
     "1. A short summary of the week: hours on battery vs plugged in, average and peak drain (%/h), typical charge sessions, time spent above 80% and below 20%.",
     "2. A per-day table: date, min and max charge, hours on battery, average drain.",
     "3. Anything unusual: fast drains, deep discharges, long stretches held at 100%.",
-    "4. The 3 to 5 changes that would help most (charge limit, power profile, charging habits, sleep), each with the evidence from my data and the expected gain.",
+    "4. Which apps or processes cost the most battery across the week, which ones look abnormal (a background process with heavy CPU time, a drain spike tied to one app), and what to do about each.",
+    "5. The 3 to 5 changes that would help most (charge limit, power profile, charging habits, sleep, heavy apps), each with the evidence from my data and the expected gain.",
     "",
     "Do not change any system setting. When a change needs a command, show it to me instead. Keep it short and concrete, with numbers."
   ].join("\n")
@@ -242,12 +305,18 @@ if (typeof module !== "undefined") {
     chargeThresholdActive: chargeThresholdActive,
     batteryIcon: batteryIcon,
     modeLabel: modeLabel,
+    batteryFull: batteryFull,
     clamp01: clamp01,
     historyPush: historyPush,
+    mergeTelemetry: mergeTelemetry,
     dayStart: dayStart,
     dayBuckets: dayBuckets,
     daySummary: daySummary,
     durationLabel: durationLabel,
+    parsePs: parsePs,
+    cpuDeltas: cpuDeltas,
+    addAppUsage: addAppUsage,
+    appUsageRows: appUsageRows,
     rateLabel: rateLabel,
     agents: agents,
     agentLabel: agentLabel,
